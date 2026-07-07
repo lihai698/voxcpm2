@@ -1132,6 +1132,7 @@ def create_demo_interface(demo: VoxCPMDemo):
             dit_steps_val,
             seed_val,
             progress=gr.Progress(track_tqdm=False),
+            job_id=None,
         ):
             if not txt_files:
                 return (
@@ -1241,6 +1242,17 @@ def create_demo_interface(demo: VoxCPMDemo):
                         success_preview.append(f"{out_name}（{Path(fpath).name}，{char_count} 字，{encoding}）")
                     else:
                         hidden_success_count += 1
+                    if job_id:
+                        partial_audio_map = {wav_file.name: str(wav_file) for wav_file in generated_files}
+                        partial_choices = list(partial_audio_map.keys())
+                        partial_first = partial_choices[0] if partial_choices else None
+                        with BATCH_JOBS_LOCK:
+                            job = BATCH_JOBS.get(job_id)
+                            if job:
+                                job["partial_audio_map"] = partial_audio_map
+                                job["partial_choices"] = partial_choices
+                                job["partial_first_audio"] = partial_audio_map.get(partial_first) if partial_first else None
+                                job["message"] = f"后台生成中：已完成 {generated_count}/{len(txt_files)} 个 TXT。"
                 except Exception as e:
                     logger.error(f"Batch gen failed for {fpath}: {e}")
                     status_lines.append(f"生成失败：{Path(fpath).name}（{e}）")
@@ -1293,7 +1305,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     job["status"] = "running"
                     job["message"] = "后台生成中..."
             try:
-                result = _batch_generate(*batch_args, progress=_noop_progress)
+                result = _batch_generate(*batch_args, progress=_noop_progress, job_id=job_id)
                 with BATCH_JOBS_LOCK:
                     job = BATCH_JOBS.get(job_id)
                     if job:
@@ -1336,6 +1348,20 @@ def create_demo_interface(demo: VoxCPMDemo):
             status = job.get("status")
             if status in {"queued", "running"}:
                 elapsed = time.time() - float(job.get("created_at", time.time()))
+                partial_audio_map = job.get("partial_audio_map") or {}
+                partial_choices = job.get("partial_choices") or list(partial_audio_map.keys())
+                partial_first = partial_choices[0] if partial_choices else None
+                if partial_audio_map:
+                    return (
+                        gr.update(value=job.get("partial_first_audio")),
+                        gr.update(visible=False),
+                        gr.update(value=f"{job.get('message', '后台生成中...')}\n已用时：{elapsed:.1f} 秒\n已生成的音频可以先试听。", visible=True),
+                        gr.update(visible=True),
+                        gr.update(choices=partial_choices, value=partial_first, visible=True),
+                        partial_audio_map,
+                        gr.update(value="开始生成", interactive=True),
+                        job_id,
+                    )
                 return (
                     gr.update(),
                     gr.update(),
