@@ -1,0 +1,62 @@
+{
+  "🎭 角色扮演": [
+    ["中老年女性，声音低沉阴冷，语速缓慢而有力，字字深思熟虑，带有深不可测的城府与威慑感", "哀家在这深宫待了四十年，什么风浪没见过？你以为瞒得过哀家？"],
+    ["暴躁的中年男声，语速快，充满无奈和愤怒", "踩离合！踩刹车啊！你往哪儿开呢？前面是树你看不见吗？我教了你八百遍了，打死方向盘！"],
+    ["年轻女性，温柔甜美，带点撒娇的语气", "人家真的等了好久嘛...你就陪我去嘛，好不好嘛~"],
+    ["沧桑的老者，声音沙哑但充满智慧，语速缓慢", "年轻人啊，这世间的道理，不是三言两语能说清的。想当年，我也像你这般意气风发..."],
+    ["冷酷无情的反派，低沉男声，带有轻蔑的冷笑", "呵呵...你以为这就是结局？太天真了。在这个世界上，只有强者才有资格制定规则。"],
+    ["活泼可爱的少女，元气满满，语速轻快", "哇！真的吗？太棒了！我超级喜欢这个结果！谢谢你啦，你最好了！"],
+    ["专业的新闻主播，标准普通话，庄重沉稳", "各位观众晚上好，欢迎收看新闻联播。今天节目的主要内容有：国家推出新的便民政策，涉及医疗、教育等多个领域。"],
+    ["活泼的带货主播，热情奔放，语速很快", "家人们！三二一，上链接！这个真的绝了，我从来没有见过这么划算的价格，今天不买真的亏大了！"],
+    ["温柔的睡前故事声，年轻女性，轻声细语", "月亮升起来了，小兔子闭上眼睛，听着风儿轻轻吹过树叶的声音，慢慢地进入了甜甜的梦乡..."],
+    ["狂妄自大的少年将军，年轻气盛，语速快，充满自信与不屑", "哼！区区敌军也敢挡本将军的路？传令下去，三军听令——一个不留，杀无赦！"],
+    ["疲惫的中年上班族，低沉压抑，语速缓慢，带着深深的倦意", "哎……又是一天。地铁上全是人，回到家也不想说话。什么时候才能喘口气呢？"],
+    ["神秘的占卜师，女性，声音虚幻飘渺，带着一丝魅惑", "年轻人，你的命运线在这里分叉了……是走向光明，还是堕入深渊，全在你一念之间……"],
+    ["天真无邪的小孩子，约5岁，奶声奶气，语速慢，偶尔磕巴", "妈妈，你看，天上的云好像一只大狗狗！它会不会咬人呀？"],
+    ["冷酷的女杀手，声音冰冷，毫无感情，说话简短有力", "目标已锁定。三秒后清除。不用留活口。"],
+    ["热情的邻家大姐姐，元气满满，声音明亮，带着感染力", "早上好呀！今天阳光真好，我给你带了早餐，趁热吃吧~"],
+    ["睿智的老教授，男，声音沉稳，略带沙哑，喜欢用比喻", "知识就像黑夜里的灯，你永远不知道它会在哪一刻照亮你前进的路。"],
+    ["娇蛮的公主，年轻女性，声音清脆，语气傲娇，喜欢哼", "哼！本公主让你跪下，你没听见吗？还不快点！"],
+    ["绝望的幸存者，废墟之中，声音沙哑，断断续续，带着哭腔", "有……有人吗？救救我……我在这里……我不想死……"],
+    ["搞笑综艺主持人，语速极快，充满激情，带梗", "哇哦！来了来了！这位哥哥你真的太会了！全场尖叫！！！"],
+    ["AI智能助手，中性声音，平稳流畅，礼貌而专业", "您好，我是您的智能助手。请问有什么可以帮助您的吗？我会尽力为您提供准确的信息。"],
+    ["醉酒的中年大叔，大舌头，含糊不清，情绪化", "我跟你们嗦……我没醉！再来一杯！今天开……开心！"],
+    ["古风女侠，声音清冷，字字珠玑，带有杀意", "你我无冤无仇，但你既已踏入此地，便休想全身而退。拔剑吧。"],
+    ["忍辱负重的太监，尖细嗓音，低声下气，但暗含机锋", "皇上息怒……奴才只是担心您的龙体。这事儿，咱不妨从长计议……"],
+    ["说唱歌手，20岁男生，节奏感强，带一点街头气质", "哟，check it out！这个beat很带感，生活就像歌词，写满了起起落落，但我不认输！"]
+  ],
+  "🌏 方言专区": [
+    ["粤语，中年男性，语气平淡，地道的广东口音", "伙计，唔该一个A餐，冻奶茶少甜！呢个系我哋嘅传统味道。"],
+    ["四川话，泼辣爽快的川妹子，语速偏快", "刘亚楼，你记一下，我做如下部署。这个事情必须要搞快哈，莫要磨磨蹭蹭的！"],
+    ["东北话，豪爽的大汉，大大咧咧", "曾经有一份贼拉真挚的爱情搁在我跟前，我没稀罕，等到整没了才后悔莫及。人世间最憋屈的事儿莫过于此。"],
+    ["河南话，接地气的中年大叔，朴实厚道", "恁这是弄啥嘞？晌午吃啥饭？我跟你说，这事可不是那样弄嘞，你得听我的！"],
+    ["上海话，精明的上海阿姨，语速快而清晰", "侬看看搿只小囡，机灵是机灵得来！一道算术题目，伊眼睛眨眨就解出来唻。勿像阿拉屋里个憨大。"],
+    ["闽南语，慈祥的阿嬷，温柔的台湾腔", "透早起来，开门就听着厝角鸟仔咧啼。阿妈攑着葵扇，佇咧龙眼树下，共阮囡仔讲故事。"],
+    ["陕西话，老实巴交的关中汉子", "嘹咋咧！这事你包在我身上，咱陕西人说话算话，一个唾沫一个钉！"],
+    ["吴语，软糯婉转的江南女子，语速轻柔带吴侬软语特色，语调如评弹般婉转", "倷好呀～今朝天气蛮灵额，阿拉一道去外滩兜兜风好伐？顺便吃碗小馄饨，鲜得来眉毛也落脱了！"],
+    ["山东话，豪爽实在的齐鲁大汉，语气憨厚带浓重乡音，语速中等偏快不拐弯", "老师儿！恁这话说得真在理！俺们山东人办事就讲究一个实在，说一不二！走，咱去整碗把子肉，喝口趵突泉啤酒，舒坦！"]
+  ],
+  "🌍 英文风格": [
+    ["A young girl with a soft, sweet voice. Speaks slowly with a melancholic, slightly tsundere tone.", "I never asked you to stay… It's not like I care or anything. But… why does it still hurt so much now that you're gone?"],
+    ["Relaxed young male voice, slightly nasal, lazy drawl, very casual and chill", "Dude, did you see that set? The waves out there are totally gnarly today. Just catching barrels all morning — it's like, totally righteous, you know what I mean?"],
+    ["Strict British professor, precise articulation, authoritative but fair", "I shall be blunt. Your thesis lacks coherent argumentation and proper citation. I expect substantial revisions by Friday."],
+    ["Elderly grandmother, warm and comforting, slightly trembling voice", "Oh my dear, come sit by the fire. Let me tell you a story about when I was your age. Everything was so different back then..."],
+    ["Military drill sergeant, loud and commanding, aggressive tone", "Listen up, maggots! You think this is a game? Drop and give me fifty! I've seen stronger arms on a spaghetti noodle!"],
+    ["Scottish Highlander, thick accent, rugged and proud", "Och, laddie! The hills are calling, and the bagpipes are playing. There's no place like the Highlands after a good rain."],
+    ["Southern Belle, elegant and charming, slow drawl", "Well, I declare! That's the sweetest thing anyone's ever said to little ol' me. Would you care for some sweet tea?"],
+    ["Australian surfer, laid-back, friendly and upbeat", "G'day mate! Fair dinkum, that was an absolute ripper of a wave! Stoked to be here, the weather's bonza today!"],
+    ["Professional documentary narrator, deep male voice, mysterious and engaging", "In the depths of the Amazon rainforest, creatures unseen by human eyes for millions of years continue to thrive in the shadows..."],
+    ["Enthusiastic sports commentator, high energy, fast-paced", "Unbelievable! He's going for it! It's a goal! The crowd goes wild! This is the moment we've all been waiting for!"],
+    ["Calming meditation guide, soft-spoken, slow and peaceful", "Breathe in... and out. Feel the tension leaving your body with every exhale. You are safe, you are calm, you are at peace."],
+    ["Tech startup CEO, confident, energetic, Silicon Valley style", "We're not just disrupting the market, we're revolutionizing the paradigm! It's all about synergy and thinking outside the box!"]
+  ],
+  "🌐 多语言": [
+    ["日语，年轻女性， anime 动漫风格，元气满满", "おはようございます！今日も一日頑張りましょう！私、絶対に諦めませんから！"],
+    ["法语，优雅的女性，浪漫的巴黎口音", "Ah, Paris au printemps... c'est magique, n'est-ce pas? Les fleurs, l'amour, la vie est belle."],
+    ["德语，严谨的工程师，清晰有力", "Die Toleranzgrenze liegt bei exakt 0,02 Millimetern. Wir müssen präzise arbeiten, keine Fehler erlaubt."],
+    ["西班牙语，热情似火的拉丁女郎", "¡Ay, mi corazón! Esta música me hace querer bailar toda la noche. ¡Vamos a celebrar!"],
+    ["韩语，严厉的姐姐，韩剧中常见的语气", "네가 감히 우리 아들을 넘봐?! 당장 내 눈앞에서 꺼져! 이 돈 받고 당장 떨어지라고!"],
+    ["俄语，低沉的男声，充满力量感", "Товарищ! Мы не отступим! Эта победа будет за нами, какой бы ценой она ни далась!"],
+    ["意大利语，热情的男高音，歌剧般的夸张", "Bella! Magnifica! Questa è la vita, amore mio! Dobbiamo vivere ogni momento come se fosse l'ultimo!"]
+  ]
+}
