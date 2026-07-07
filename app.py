@@ -592,6 +592,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     interactive=False,
                     lines=3,
                 )
+                batch_generate_btn = gr.Button("开始批量生成 TXT", variant="secondary")
 
                 with gr.Accordion(I18N("advanced_settings_title"), open=False):
                     DoDenoisePromptAudio = gr.Checkbox(
@@ -644,6 +645,14 @@ def create_demo_interface(demo: VoxCPMDemo):
 
                 # 批量生成结果
                 batch_output = gr.File(label="📦 批量生成结果（ZIP 下载）", visible=False)
+                batch_preview_dropdown = gr.Dropdown(
+                    label="🎧 试听批量结果",
+                    choices=[],
+                    value=None,
+                    visible=False,
+                    interactive=True,
+                )
+                batch_preview_audio = gr.Audio(label="当前试听音频", visible=False)
 
                 # 保存音色
                 with gr.Accordion("💾 保存音色", open=False):
@@ -729,6 +738,53 @@ def create_demo_interface(demo: VoxCPMDemo):
                 f"无法读取文本编码：{last_error}",
             )
 
+        def _preview_txt_files(txt_files):
+            if not txt_files:
+                return (
+                    gr.update(value="", visible=False),
+                    gr.update(visible=False),
+                    gr.update(choices=[], value=None, visible=False),
+                    gr.update(value=None, visible=False),
+                )
+
+            total_chars = 0
+            lines = [f"已选择 {len(txt_files)} 个 TXT。点击“开始批量生成 TXT”后，每个 TXT 会生成 1 条音频，并统一打包为 ZIP。"]
+            preview_limit = 8
+            for index, f in enumerate(txt_files[:preview_limit], 1):
+                fpath = f.name if hasattr(f, "name") else f
+                try:
+                    content, encoding = _read_txt_file(fpath)
+                    total_chars += len(content)
+                    preview = re.sub(r"\s+", " ", content[:48])
+                    lines.append(f"{index}. {Path(fpath).name}：{len(content)} 字，{encoding}，预览：{preview}")
+                except Exception as e:
+                    lines.append(f"{index}. {Path(fpath).name}：读取失败（{e}）")
+            if len(txt_files) > preview_limit:
+                lines.append(f"... 还有 {len(txt_files) - preview_limit} 个文件已收起显示。")
+            lines.append(f"当前预览统计：前 {min(len(txt_files), preview_limit)} 个文件共 {total_chars} 字。")
+            return (
+                gr.update(value="\n".join(lines), visible=True),
+                gr.update(visible=False),
+                gr.update(choices=[], value=None, visible=False),
+                gr.update(value=None, visible=False),
+            )
+
+        def _batch_start_feedback(txt_files):
+            count = len(txt_files or [])
+            if count == 0:
+                return (
+                    gr.update(value="请先上传 TXT 文件。", visible=True),
+                    gr.update(visible=False),
+                    gr.update(choices=[], value=None, visible=False),
+                    gr.update(value=None, visible=False),
+                )
+            return (
+                gr.update(value=f"正在生成 {count} 个 TXT 对应的音频，请稍等。生成完成后会提供 ZIP 下载和逐条试听。", visible=True),
+                gr.update(visible=False),
+                gr.update(choices=[], value=None, visible=False),
+                gr.update(value=None, visible=False),
+            )
+
         def _batch_generate(
             txt_files,
             control_instruction_val,
@@ -742,12 +798,18 @@ def create_demo_interface(demo: VoxCPMDemo):
             seed_val,
         ):
             if not txt_files:
-                return gr.update(visible=False), gr.update(value="", visible=False)
+                return (
+                    gr.update(visible=False),
+                    gr.update(value="请先上传 TXT 文件。", visible=True),
+                    gr.update(choices=[], value=None, visible=False),
+                    gr.update(value=None, visible=False),
+                )
             import tempfile, zipfile
             out_dir = Path(tempfile.mkdtemp(prefix="voxcpm_batch_"))
             status_lines = []
+            generated_files = []
             generated_count = 0
-            for f in txt_files:
+            for index, f in enumerate(txt_files, 1):
                 fpath = f.name if hasattr(f, 'name') else f
                 try:
                     content, encoding = _read_txt_file(fpath)
@@ -777,8 +839,11 @@ def create_demo_interface(demo: VoxCPMDemo):
                         seed=seed,
                     )
                     import soundfile as sf
-                    out_name = Path(fpath).stem + ".wav"
-                    sf.write(str(out_dir / out_name), wav_np, sr)
+                    safe_stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", Path(fpath).stem).strip() or "txt"
+                    out_name = f"{index:03d}_{safe_stem}.wav"
+                    out_path = out_dir / out_name
+                    sf.write(str(out_path), wav_np, sr)
+                    generated_files.append(out_path)
                     generated_count += 1
                 except Exception as e:
                     logger.error(f"Batch gen failed for {fpath}: {e}")
@@ -786,16 +851,40 @@ def create_demo_interface(demo: VoxCPMDemo):
 
             if generated_count == 0:
                 status = "\n".join(status_lines) if status_lines else "没有可生成的 TXT 内容。"
-                return gr.update(visible=False), gr.update(value=status, visible=True)
+                return (
+                    gr.update(visible=False),
+                    gr.update(value=status, visible=True),
+                    gr.update(choices=[], value=None, visible=False),
+                    gr.update(value=None, visible=False),
+                )
 
             zip_path = out_dir.parent / f"{out_dir.name}.zip"
             with zipfile.ZipFile(zip_path, "w") as zf:
-                for wav_file in out_dir.glob("*.wav"):
+                for wav_file in sorted(out_dir.glob("*.wav")):
                     zf.write(wav_file, wav_file.name)
             status_lines.append(f"完成：生成 {generated_count} 条音频。")
-            return gr.update(value=str(zip_path), visible=True), gr.update(value="\n".join(status_lines), visible=True)
+            choices = [(wav_file.name, str(wav_file)) for wav_file in generated_files]
+            first_audio = str(generated_files[0]) if generated_files else None
+            return (
+                gr.update(value=str(zip_path), visible=True),
+                gr.update(value="\n".join(status_lines), visible=True),
+                gr.update(choices=choices, value=first_audio, visible=True),
+                gr.update(value=first_audio, visible=True),
+            )
 
         txt_upload.change(
+            fn=_preview_txt_files,
+            inputs=[txt_upload],
+            outputs=[txt_status, batch_output, batch_preview_dropdown, batch_preview_audio],
+            show_progress=False,
+        )
+
+        batch_generate_btn.click(
+            fn=_batch_start_feedback,
+            inputs=[txt_upload],
+            outputs=[txt_status, batch_output, batch_preview_dropdown, batch_preview_audio],
+            show_progress=False,
+        ).then(
             fn=_batch_generate,
             inputs=[
                 txt_upload, control_instruction, reference_wav,
@@ -803,8 +892,14 @@ def create_demo_interface(demo: VoxCPMDemo):
                 cfg_value, DoNormalizeText, DoDenoisePromptAudio,
                 dit_steps, seed_value,
             ],
-            outputs=[batch_output, txt_status],
+            outputs=[batch_output, txt_status, batch_preview_dropdown, batch_preview_audio],
             show_progress=True,
+        )
+
+        batch_preview_dropdown.change(
+            fn=lambda audio_path: gr.update(value=audio_path, visible=bool(audio_path)),
+            inputs=[batch_preview_dropdown],
+            outputs=[batch_preview_audio],
         )
 
         # ─── 保存音色 [克隆] ───
