@@ -10,5 +10,7 @@ outs/
 logs/
 runs/
 checkpoints/
+saved_voices/
+voice_library.json
 *.log
 *.tmp

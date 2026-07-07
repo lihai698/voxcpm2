@@ -211,6 +211,16 @@ _CUSTOM_CSS = """
 .switch-toggle input[type="checkbox"]:checked::after {
     transform: translateX(20px);
 }
+
+/* TXT 批量上传文件列表限高，最多显示3个，超出滚动 */
+.txt-upload-limited .file-preview {
+    max-height: 108px;
+    overflow-y: auto;
+}
+.txt-upload-limited ul {
+    max-height: 108px;
+    overflow-y: auto;
+}
 """
 
 _APP_THEME = gr.themes.Soft(
@@ -219,6 +229,32 @@ _APP_THEME = gr.themes.Soft(
     neutral_hue="slate",
     font=[gr.themes.GoogleFont("Inter"), "Arial", "sans-serif"],
 )
+
+# ---------- Voice Library ----------
+
+import json
+import shutil
+
+VOICE_LIB_PATH = Path(__file__).parent / "voice_library.json"
+VOICES_DIR = Path(__file__).parent / "saved_voices"
+VOICES_DIR.mkdir(exist_ok=True)
+
+
+def _load_voice_lib():
+    if VOICE_LIB_PATH.exists():
+        return json.loads(VOICE_LIB_PATH.read_text(encoding="utf-8"))
+    return []
+
+
+def _save_voice_lib(data):
+    VOICE_LIB_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _get_voice_choices():
+    lib = _load_voice_lib()
+    if not lib:
+        return ["(空)"]
+    return [f"[{'克隆' if v['type']=='clone' else '设计'}] {v['name']}" for v in lib]
 
 
 # ---------- Model ----------
@@ -241,7 +277,6 @@ def validate_local_model_dir(model_id: str) -> None:
         return
     if not model_path.is_dir():
         raise FileNotFoundError(f"Local model path is not a directory: {model_path}")
-
     if not looks_like_local_path:
         return
 
@@ -512,6 +547,21 @@ def create_demo_interface(demo: VoxCPMDemo):
                     lines=3,
                 )
 
+                # TXT 批量上传
+                txt_upload = gr.File(
+                    label="📄 上传 TXT 批量生成（多选，每个文件生成一条音频）",
+                    file_types=[".txt"],
+                    file_count="multiple",
+                    elem_classes=["txt-upload-limited"],
+                )
+                txt_status = gr.Textbox(
+                    label="TXT 读取状态",
+                    value="",
+                    visible=False,
+                    interactive=False,
+                    lines=3,
+                )
+
                 with gr.Accordion(I18N("advanced_settings_title"), open=False):
                     DoDenoisePromptAudio = gr.Checkbox(
                         value=False,
@@ -560,7 +610,27 @@ def create_demo_interface(demo: VoxCPMDemo):
 
             with gr.Column():
                 audio_output = gr.Audio(label=I18N("generated_audio_label"))
-                gr.Markdown(I18N("examples_footer"))
+
+                # 批量生成结果
+                batch_output = gr.File(label="📦 批量生成结果（ZIP 下载）", visible=False)
+
+                # 保存音色
+                with gr.Accordion("💾 保存音色", open=False):
+                    voice_lib_dropdown = gr.Dropdown(
+                        choices=_get_voice_choices(),
+                        value=None,
+                        label="📂 本地音色库（选择后自动加载）",
+                        interactive=True,
+                    )
+                    voice_name_input = gr.Textbox(
+                        label="音色名称", placeholder="输入名称...", lines=1)
+                    with gr.Row():
+                        save_clone_btn = gr.Button("保存 [克隆]", size="sm")
+                        save_design_btn = gr.Button("保存 [设计]", size="sm")
+                    save_status = gr.Textbox(label="", interactive=False, lines=1)
+
+                with gr.Accordion("💡 使用示例 / 方言提示", open=False):
+                    gr.Markdown(I18N("examples_footer"))
 
         show_prompt_text.change(
             fn=_on_toggle_instant,
@@ -607,6 +677,186 @@ def create_demo_interface(demo: VoxCPMDemo):
             outputs=[audio_output, seed_value],
             show_progress=True,
             api_name="generate",
+        )
+
+        # ─── 批量 TXT 生成 ───
+        def _read_txt_file(fpath):
+            path = Path(fpath)
+            last_error = None
+            for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+                try:
+                    content = path.read_text(encoding=encoding).strip()
+                    return content, encoding
+                except UnicodeDecodeError as exc:
+                    last_error = exc
+            raise UnicodeDecodeError(
+                "txt",
+                b"",
+                0,
+                1,
+                f"无法读取文本编码：{last_error}",
+            )
+
+        def _batch_generate(
+            txt_files,
+            control_instruction_val,
+            ref_wav,
+            use_prompt_text,
+            prompt_text_val,
+            cfg_val,
+            do_normalize,
+            denoise,
+            dit_steps_val,
+            seed_val,
+        ):
+            if not txt_files:
+                return gr.update(visible=False), gr.update(value="", visible=False)
+            import tempfile, zipfile
+            out_dir = Path(tempfile.mkdtemp(prefix="voxcpm_batch_"))
+            status_lines = []
+            generated_count = 0
+            for f in txt_files:
+                fpath = f.name if hasattr(f, 'name') else f
+                try:
+                    content, encoding = _read_txt_file(fpath)
+                except Exception as e:
+                    status_lines.append(f"读取失败：{Path(fpath).name}（{e}）")
+                    continue
+
+                char_count = len(content)
+                if not content:
+                    status_lines.append(f"跳过空文件：{Path(fpath).name}")
+                    continue
+                preview = re.sub(r"\s+", " ", content[:80])
+                status_lines.append(f"已读取：{Path(fpath).name}，{char_count} 字，编码 {encoding}，预览：{preview}")
+                seed = _prepare_seed(True, seed_val)
+                actual_prompt = prompt_text_val.strip() if use_prompt_text else ""
+                actual_ctrl = "" if use_prompt_text else control_instruction_val
+                try:
+                    sr, wav_np, _ = demo.generate_tts_audio(
+                        text_input=content,
+                        control_instruction=actual_ctrl,
+                        reference_wav_path_input=ref_wav,
+                        prompt_text=actual_prompt,
+                        cfg_value_input=cfg_val,
+                        do_normalize=do_normalize,
+                        denoise=denoise,
+                        inference_timesteps=int(dit_steps_val),
+                        seed=seed,
+                    )
+                    import soundfile as sf
+                    out_name = Path(fpath).stem + ".wav"
+                    sf.write(str(out_dir / out_name), wav_np, sr)
+                    generated_count += 1
+                except Exception as e:
+                    logger.error(f"Batch gen failed for {fpath}: {e}")
+                    status_lines.append(f"生成失败：{Path(fpath).name}（{e}）")
+
+            if generated_count == 0:
+                status = "\n".join(status_lines) if status_lines else "没有可生成的 TXT 内容。"
+                return gr.update(visible=False), gr.update(value=status, visible=True)
+
+            zip_path = out_dir.parent / f"{out_dir.name}.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                for wav_file in out_dir.glob("*.wav"):
+                    zf.write(wav_file, wav_file.name)
+            status_lines.append(f"完成：生成 {generated_count} 条音频。")
+            return gr.update(value=str(zip_path), visible=True), gr.update(value="\n".join(status_lines), visible=True)
+
+        txt_upload.change(
+            fn=_batch_generate,
+            inputs=[
+                txt_upload, control_instruction, reference_wav,
+                show_prompt_text, prompt_text,
+                cfg_value, DoNormalizeText, DoDenoisePromptAudio,
+                dit_steps, seed_value,
+            ],
+            outputs=[batch_output, txt_status],
+            show_progress=True,
+        )
+
+        # ─── 保存音色 [克隆] ───
+        def _save_voice_clone(name, ref_audio, asr_text):
+            if not name or not name.strip():
+                return "请输入音色名称"
+            if not ref_audio:
+                return "请先上传参考音频"
+            lib = _load_voice_lib()
+            audio_copy = VOICES_DIR / f"{name.strip()}.wav"
+            shutil.copy2(ref_audio, audio_copy)
+            lib.append({
+                "name": name.strip(),
+                "type": "clone",
+                "audio": str(audio_copy),
+                "asr_text": asr_text or "",
+            })
+            _save_voice_lib(lib)
+            return f"✓ 已保存: [克隆] {name.strip()}"
+
+        save_clone_btn.click(
+            fn=_save_voice_clone,
+            inputs=[voice_name_input, reference_wav, prompt_text],
+            outputs=[save_status],
+        ).then(
+            fn=lambda: gr.update(choices=_get_voice_choices()),
+            outputs=[voice_lib_dropdown],
+        )
+
+        # ─── 保存音色 [设计] ───
+        def _save_voice_design(name, ctrl, cfg_val, steps_val, seed_val):
+            if not name or not name.strip():
+                return "请输入音色名称"
+            lib = _load_voice_lib()
+            lib.append({
+                "name": name.strip(),
+                "type": "design",
+                "ctrl": ctrl or "",
+                "cfg": float(cfg_val),
+                "steps": int(steps_val),
+                "seed": int(seed_val) if seed_val else 0,
+            })
+            _save_voice_lib(lib)
+            return f"✓ 已保存: [设计] {name.strip()}"
+
+        save_design_btn.click(
+            fn=_save_voice_design,
+            inputs=[voice_name_input, control_instruction, cfg_value, dit_steps, seed_value],
+            outputs=[save_status],
+        ).then(
+            fn=lambda: gr.update(choices=_get_voice_choices()),
+            outputs=[voice_lib_dropdown],
+        )
+
+        # ─── 加载音色 ───
+        def _load_voice(choice):
+            if not choice or choice == "(空)":
+                return [gr.update()] * 4
+            lib = _load_voice_lib()
+            tag = "克隆" if "[克隆]" in choice else "设计"
+            name = choice.split("] ")[1] if "] " in choice else choice
+            for v in lib:
+                v_tag = "克隆" if v["type"] == "clone" else "设计"
+                if v["name"] == name and v_tag == tag:
+                    if v["type"] == "clone":
+                        return [
+                            gr.update(value=v.get("audio")),
+                            gr.update(value=v.get("asr_text", "")),
+                            gr.update(),
+                            gr.update(),
+                        ]
+                    else:
+                        return [
+                            gr.update(),
+                            gr.update(),
+                            gr.update(value=v.get("ctrl", "")),
+                            gr.update(value=v.get("cfg", 2.0)),
+                        ]
+            return [gr.update()] * 4
+
+        voice_lib_dropdown.change(
+            fn=_load_voice,
+            inputs=[voice_lib_dropdown],
+            outputs=[reference_wav, prompt_text, control_instruction, cfg_value],
         )
 
     return interface
