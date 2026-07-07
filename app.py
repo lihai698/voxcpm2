@@ -903,7 +903,7 @@ def create_demo_interface(demo: VoxCPMDemo):
 
                 # TXT 批量上传
                 txt_upload = gr.File(
-                    label="📄 上传 TXT 批量生成（多选，每个文件生成一条音频）",
+                    label="上传 TXT 批量生成",
                     file_types=[".txt"],
                     file_count="multiple",
                     height=136,
