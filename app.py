@@ -24,7 +24,10 @@ logger = logging.getLogger(__name__)
 
 MAX_BATCH_CHUNK_CHARS = 220
 MAX_BATCH_TOTAL_CHARS = 8000
-BATCH_CHUNK_PAUSE_SECONDS = 0.18
+BATCH_CHUNK_PAUSE_SECONDS = 0.12
+BATCH_CHUNK_FADE_SECONDS = 0.035
+BATCH_CHUNK_MAX_EDGE_TRIM_SECONDS = 0.16
+BATCH_CHUNK_KEEP_EDGE_SECONDS = 0.025
 
 
 def _split_text_for_tts(text: str, max_chars: int = MAX_BATCH_CHUNK_CHARS) -> list[str]:
@@ -64,6 +67,64 @@ def _split_text_for_tts(text: str, max_chars: int = MAX_BATCH_CHUNK_CHARS) -> li
     if current:
         chunks.append(current)
     return chunks
+
+
+def _trim_chunk_edge_silence(wav: np.ndarray, sr: int) -> np.ndarray:
+    """Trim only excessive edge silence so generated chunks join more naturally."""
+    audio = np.asarray(wav, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        return audio
+
+    max_trim = int(sr * BATCH_CHUNK_MAX_EDGE_TRIM_SECONDS)
+    keep = int(sr * BATCH_CHUNK_KEEP_EDGE_SECONDS)
+    threshold = max(0.006, float(np.max(np.abs(audio))) * 0.02)
+    active = np.flatnonzero(np.abs(audio) > threshold)
+    if active.size == 0:
+        return audio
+
+    start = max(0, min(int(active[0]), max_trim) - keep)
+    end_trim = min(audio.size - int(active[-1]) - 1, max_trim)
+    end = audio.size - max(0, end_trim - keep)
+    if start >= end:
+        return audio
+    return audio[start:end]
+
+
+def _apply_chunk_boundary_fades(wav: np.ndarray, sr: int, *, fade_in: bool, fade_out: bool) -> np.ndarray:
+    audio = np.asarray(wav, dtype=np.float32).reshape(-1).copy()
+    fade_len = min(int(sr * BATCH_CHUNK_FADE_SECONDS), audio.size // 4)
+    if fade_len <= 1:
+        return audio
+    if fade_in:
+        audio[:fade_len] *= np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
+    if fade_out:
+        audio[-fade_len:] *= np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
+    return audio
+
+
+def _merge_tts_chunks_smoothly(chunk_wavs: list[np.ndarray], sr: int) -> np.ndarray:
+    """Join generated chunks with a short breath and fades instead of a hard splice."""
+    if not chunk_wavs:
+        return np.zeros(0, dtype=np.float32)
+
+    if len(chunk_wavs) == 1:
+        return np.asarray(chunk_wavs[0], dtype=np.float32).reshape(-1)
+
+    pause = np.zeros(int(sr * BATCH_CHUNK_PAUSE_SECONDS), dtype=np.float32)
+    merged_parts = []
+    last_index = len(chunk_wavs) - 1
+    for index, chunk_wav in enumerate(chunk_wavs):
+        chunk = _trim_chunk_edge_silence(chunk_wav, sr)
+        chunk = _apply_chunk_boundary_fades(
+            chunk,
+            sr,
+            fade_in=index > 0,
+            fade_out=index < last_index,
+        )
+        merged_parts.append(chunk)
+        if index < last_index:
+            merged_parts.append(pause)
+    return np.concatenate(merged_parts).astype(np.float32)
 
 # ---------- Inline i18n (en + zh-CN only) ----------
 
@@ -966,7 +1027,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                     chunk_wavs = []
                     sr = None
                     for chunk_index, chunk in enumerate(chunks, 1):
-                        chunk_seed = seed + chunk_index - 1 if seed is not None else None
                         chunk_sr, chunk_wav, _ = demo.generate_tts_audio(
                             text_input=chunk,
                             control_instruction=actual_ctrl,
@@ -976,19 +1036,13 @@ def create_demo_interface(demo: VoxCPMDemo):
                             do_normalize=do_normalize,
                             denoise=denoise,
                             inference_timesteps=int(dit_steps_val),
-                            seed=chunk_seed,
+                            seed=seed,
                             retry_badcase=True,
                         )
                         sr = chunk_sr
                         chunk_wavs.append(chunk_wav)
 
-                    pause = np.zeros(int(sr * BATCH_CHUNK_PAUSE_SECONDS), dtype=np.float32)
-                    wav_parts = []
-                    for chunk_index, chunk_wav in enumerate(chunk_wavs):
-                        wav_parts.append(chunk_wav)
-                        if chunk_index < len(chunk_wavs) - 1:
-                            wav_parts.append(pause)
-                    wav_np = np.concatenate(wav_parts).astype(np.float32)
+                    wav_np = _merge_tts_chunks_smoothly(chunk_wavs, sr)
                     import soundfile as sf
                     safe_stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", Path(fpath).stem).strip() or "txt"
                     out_name = f"{index:03d}_{safe_stem}.wav"
