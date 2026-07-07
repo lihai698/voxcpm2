@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 BATCH_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voxcpm-batch")
 BATCH_JOBS: dict[str, dict] = {}
 BATCH_JOBS_LOCK = threading.Lock()
+MODEL_RUNTIME_LOCK = threading.Lock()
 
 MAX_BATCH_CHUNK_CHARS = 220
 MAX_BATCH_TOTAL_CHARS = 8000
@@ -564,22 +565,26 @@ class VoxCPMDemo:
 
         self.voxcpm_model: Optional[voxcpm.VoxCPM] = None
         self._model_id = model_id
+        self._model_init_lock = threading.Lock()
 
     def get_or_load_voxcpm(self) -> voxcpm.VoxCPM:
         if self.voxcpm_model is not None:
             return self.voxcpm_model
-        logger.info(f"Loading model: {self._model_id}")
-        try:
-            validate_local_model_dir(self._model_id)
-            self.voxcpm_model = voxcpm.VoxCPM.from_pretrained(
-                self._model_id,
-                optimize=self.optimize,
-                device=self.device,
-            )
-        except Exception as exc:
-            logger.exception("Failed to load VoxCPM model.")
-            raise friendly_runtime_error(exc) from exc
-        logger.info("Model loaded successfully.")
+        with self._model_init_lock:
+            if self.voxcpm_model is not None:
+                return self.voxcpm_model
+            logger.info(f"Loading model: {self._model_id}")
+            try:
+                validate_local_model_dir(self._model_id)
+                self.voxcpm_model = voxcpm.VoxCPM.from_pretrained(
+                    self._model_id,
+                    optimize=self.optimize,
+                    device=self.device,
+                )
+            except Exception as exc:
+                logger.exception("Failed to load VoxCPM model.")
+                raise friendly_runtime_error(exc) from exc
+            logger.info("Model loaded successfully.")
         return self.voxcpm_model
 
     def get_or_load_asr_model(self) -> AutoModel:
@@ -688,7 +693,8 @@ class VoxCPMDemo:
             retry_badcase=retry_badcase,
         )
         try:
-            wav = current_model.generate(**generate_kwargs)
+            with MODEL_RUNTIME_LOCK:
+                wav = current_model.generate(**generate_kwargs)
         except Exception as exc:
             logger.exception("VoxCPM generation failed.")
             raise friendly_runtime_error(exc) from exc
@@ -726,15 +732,16 @@ class VoxCPMDemo:
             final_text[:80],
         )
         try:
-            wav = current_model.generate_with_prompt_cache(
-                text=final_text,
-                prompt_cache=prompt_cache,
-                cfg_value=float(cfg_value_input),
-                inference_timesteps=inference_timesteps,
-                normalize=do_normalize,
-                retry_badcase=retry_badcase,
-                seed=seed,
-            )
+            with MODEL_RUNTIME_LOCK:
+                wav = current_model.generate_with_prompt_cache(
+                    text=final_text,
+                    prompt_cache=prompt_cache,
+                    cfg_value=float(cfg_value_input),
+                    inference_timesteps=inference_timesteps,
+                    normalize=do_normalize,
+                    retry_badcase=retry_badcase,
+                    seed=seed,
+                )
         except Exception as exc:
             logger.exception("VoxCPM cached generation failed.")
             raise friendly_runtime_error(exc) from exc
@@ -1162,12 +1169,13 @@ def create_demo_interface(demo: VoxCPMDemo):
                         prompt_cache = _load_prompt_cache_file(persistent_cache_path)
                         logger.info("Loaded persistent voice prompt cache: %s", persistent_cache_path)
                     if prompt_cache is None:
-                        prompt_cache = demo.get_or_load_voxcpm().prepare_prompt_cache(
-                            prompt_wav_path=ref_wav if actual_prompt else None,
-                            prompt_text=actual_prompt or None,
-                            reference_wav_path=ref_wav,
-                            denoise=denoise,
-                        )
+                        with MODEL_RUNTIME_LOCK:
+                            prompt_cache = demo.get_or_load_voxcpm().prepare_prompt_cache(
+                                prompt_wav_path=ref_wav if actual_prompt else None,
+                                prompt_text=actual_prompt or None,
+                                reference_wav_path=ref_wav,
+                                denoise=denoise,
+                            )
                         if not actual_prompt:
                             voice_entry = _find_voice_entry_for_audio(ref_wav, actual_prompt)
                             if voice_entry and voice_entry.get("name"):
@@ -1562,10 +1570,11 @@ def create_demo_interface(demo: VoxCPMDemo):
             cache_path = _voice_cache_path(voice_name)
             cache_status = ""
             try:
-                cache = demo.get_or_load_voxcpm().prepare_prompt_cache(
-                    reference_wav_path=str(audio_copy),
-                    denoise=False,
-                )
+                with MODEL_RUNTIME_LOCK:
+                    cache = demo.get_or_load_voxcpm().prepare_prompt_cache(
+                        reference_wav_path=str(audio_copy),
+                        denoise=False,
+                    )
                 _save_prompt_cache_file(cache, cache_path)
                 cache_status = "，缓存已生成"
             except Exception as exc:
@@ -1656,6 +1665,31 @@ def create_demo_interface(demo: VoxCPMDemo):
     return interface
 
 
+def _start_background_warmup(demo: VoxCPMDemo, delay_seconds: float = 4.0):
+    def _warmup_worker():
+        time.sleep(delay_seconds)
+        try:
+            logger.info("Starting VoxCPM warmup.")
+            demo.generate_tts_audio(
+                text_input="热身。",
+                control_instruction="",
+                reference_wav_path_input=None,
+                prompt_text="",
+                cfg_value_input=2.0,
+                do_normalize=False,
+                denoise=False,
+                inference_timesteps=10,
+                seed=1,
+                retry_badcase=True,
+            )
+            logger.info("VoxCPM warmup finished.")
+        except Exception as exc:
+            logger.warning("VoxCPM warmup skipped or failed: %s", exc)
+
+    thread = threading.Thread(target=_warmup_worker, name="voxcpm-warmup", daemon=True)
+    thread.start()
+
+
 def run_demo(
     server_name: str = "127.0.0.1",
     server_port: int = 8808,
@@ -1663,9 +1697,12 @@ def run_demo(
     model_id: str = "openbmb/VoxCPM2",
     device: str = "auto",
     optimize: bool = False,
+    warmup: bool = True,
 ):
     demo = VoxCPMDemo(model_id=model_id, device=device, optimize=optimize)
     interface = create_demo_interface(demo)
+    if warmup:
+        _start_background_warmup(demo)
     interface.queue(max_size=10, default_concurrency_limit=1).launch(
         server_name=server_name,
         server_port=server_port,
@@ -1705,6 +1742,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable torch compile optimization. This can improve repeated inference speed but makes first use slower.",
     )
+    parser.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="Disable background model warmup after server startup.",
+    )
     args = parser.parse_args()
     run_demo(
         model_id=args.model_id,
@@ -1712,4 +1754,5 @@ if __name__ == "__main__":
         server_port=args.port,
         device=args.device,
         optimize=args.optimize,
+        warmup=not args.no_warmup,
     )
