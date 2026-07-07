@@ -607,6 +607,13 @@ def create_demo_interface(demo: VoxCPMDemo):
 
             with gr.Column():
                 audio_output = gr.Audio(label=I18N("generated_audio_label"))
+                generation_status = gr.Textbox(
+                    label="生成状态",
+                    value="",
+                    visible=False,
+                    interactive=False,
+                    lines=2,
+                )
 
                 # 批量生成结果
                 with gr.Row(elem_classes=["compact-result-row"]):
@@ -810,13 +817,15 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(visible=False),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value=None, visible=False),
+                    gr.update(value="生成中...", interactive=False),
                 )
             return (
                 seed,
-                gr.update(value="", visible=False),
+                gr.update(value="正在生成单条音频，请稍等。", visible=True),
                 gr.update(visible=False),
                 gr.update(choices=[], value=None, visible=False),
                 gr.update(value=None, visible=False),
+                gr.update(value="生成中...", interactive=False),
             )
 
         def _batch_generate(
@@ -919,9 +928,32 @@ def create_demo_interface(demo: VoxCPMDemo):
             seed_val,
             txt_files,
         ):
-            if txt_files:
-                batch_file, status, preview_choices, preview_audio = _batch_generate(
-                    txt_files,
+            try:
+                if txt_files:
+                    batch_file, status, preview_choices, preview_audio = _batch_generate(
+                        txt_files,
+                        control_instruction_val,
+                        ref_wav,
+                        use_prompt_text,
+                        prompt_text_val,
+                        cfg_val,
+                        do_normalize,
+                        denoise,
+                        dit_steps_val,
+                        seed_val,
+                    )
+                    return (
+                        gr.update(value=None),
+                        seed_val,
+                        batch_file,
+                        status,
+                        preview_choices,
+                        preview_audio,
+                        gr.update(value="开始生成", interactive=True),
+                    )
+
+                audio, last_successful_seed = _generate(
+                    text_value,
                     control_instruction_val,
                     ref_wav,
                     use_prompt_text,
@@ -933,34 +965,25 @@ def create_demo_interface(demo: VoxCPMDemo):
                     seed_val,
                 )
                 return (
+                    audio,
+                    last_successful_seed,
+                    gr.update(visible=False),
+                    gr.update(value="完成：单条音频已生成。", visible=True),
+                    gr.update(choices=[], value=None, visible=False),
+                    gr.update(value=None, visible=False),
+                    gr.update(value="开始生成", interactive=True),
+                )
+            except Exception as exc:
+                logger.exception("Generation failed.")
+                return (
                     gr.update(value=None),
                     seed_val,
-                    batch_file,
-                    status,
-                    preview_choices,
-                    preview_audio,
+                    gr.update(visible=False),
+                    gr.update(value=f"生成失败：{exc}", visible=True),
+                    gr.update(choices=[], value=None, visible=False),
+                    gr.update(value=None, visible=False),
+                    gr.update(value="开始生成", interactive=True),
                 )
-
-            audio, last_successful_seed = _generate(
-                text_value,
-                control_instruction_val,
-                ref_wav,
-                use_prompt_text,
-                prompt_text_val,
-                cfg_val,
-                do_normalize,
-                denoise,
-                dit_steps_val,
-                seed_val,
-            )
-            return (
-                audio,
-                last_successful_seed,
-                gr.update(visible=False),
-                gr.update(value="", visible=False),
-                gr.update(choices=[], value=None, visible=False),
-                gr.update(value=None, visible=False),
-            )
 
         txt_upload.change(
             fn=_preview_txt_files,
@@ -985,7 +1008,7 @@ def create_demo_interface(demo: VoxCPMDemo):
         run_btn.click(
             fn=_prepare_generation_feedback,
             inputs=[random_seed, seed_value, txt_upload],
-            outputs=[seed_value, txt_status, batch_output, batch_preview_dropdown, batch_preview_audio],
+            outputs=[seed_value, generation_status, batch_output, batch_preview_dropdown, batch_preview_audio, run_btn],
             show_progress=False,
         ).then(
             fn=_generate_or_batch,
@@ -997,7 +1020,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 cfg_value, DoNormalizeText, DoDenoisePromptAudio,
                 dit_steps, seed_value, txt_upload,
             ],
-            outputs=[audio_output, seed_value, batch_output, txt_status, batch_preview_dropdown, batch_preview_audio],
+            outputs=[audio_output, seed_value, batch_output, generation_status, batch_preview_dropdown, batch_preview_audio, run_btn],
             show_progress=True,
             api_name="generate",
         )
