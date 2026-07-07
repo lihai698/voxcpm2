@@ -7,6 +7,10 @@ import time
 import threading
 import uuid
 import hashlib
+import base64
+import mimetypes
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import gradio as gr
@@ -416,6 +420,7 @@ import json
 import shutil
 
 VOICE_LIB_PATH = Path(__file__).parent / "voice_library.json"
+AI_WRITER_CONFIG_PATH = Path(__file__).parent / "ai_writer_config.json"
 VOICES_DIR = Path(__file__).parent / "saved_voices"
 VOICES_DIR.mkdir(exist_ok=True)
 VOICE_CACHE_DIR = VOICES_DIR / "_cache"
@@ -438,6 +443,42 @@ def _load_voice_lib():
 
 def _save_voice_lib(data):
     VOICE_LIB_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_ai_writer_config():
+    if not AI_WRITER_CONFIG_PATH.exists():
+        return {}
+    try:
+        data = json.loads(AI_WRITER_CONFIG_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logger.warning("Failed to load AI writer config: %s", exc)
+        return {}
+
+
+def _save_ai_writer_config(data: dict):
+    AI_WRITER_CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _parse_script_blocks(text_value: str):
+    text_value = (text_value or "").strip()
+    if not text_value:
+        return []
+
+    marker_re = re.compile(r"^\s*(?:【\s*)?文案\s*([0-9０-９一二三四五六七八九十]+)\s*(?:】)?\s*[:：]?\s*$", re.MULTILINE)
+    matches = list(marker_re.finditer(text_value))
+    if len(matches) < 2:
+        return []
+
+    blocks = []
+    for index, match in enumerate(matches):
+        title = f"文案{match.group(1)}"
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text_value)
+        content = text_value[start:end].strip()
+        if content:
+            blocks.append({"title": title, "text": content})
+    return blocks
 
 
 def _safe_voice_filename(name: str) -> str:
@@ -827,6 +868,7 @@ class VoxCPMDemo:
 
 def create_demo_interface(demo: VoxCPMDemo):
     gr.set_static_paths(paths=[Path.cwd().absolute() / "assets"])
+    ai_writer_config = _load_ai_writer_config()
 
     def _coerce_seed(seed_value) -> Optional[int]:
         if seed_value is None or seed_value == "":
@@ -1004,9 +1046,46 @@ def create_demo_interface(demo: VoxCPMDemo):
                     examples_info_btn = gr.Button("使用示例 / 方言提示", size="sm")
                     modes_info_btn = gr.Button("VoxCPM2 三种语音生成模式", size="sm")
                     settings_info_btn = gr.Button("高级设置", size="sm")
+                    ai_writer_info_btn = gr.Button("AI 文案生成", size="sm")
                 examples_info_panel = gr.Markdown(I18N("examples_footer"), visible=False)
                 modes_info_panel = gr.Markdown(I18N("usage_instructions"), visible=False)
                 info_panel_state = gr.State("")
+                with gr.Group(visible=False, elem_classes=["settings-panel"]) as ai_writer_panel:
+                    ai_provider = gr.Dropdown(
+                        label="服务商",
+                        choices=["DeepSeek", "豆包"],
+                        value=ai_writer_config.get("provider", "DeepSeek"),
+                        interactive=True,
+                    )
+                    ai_api_key = gr.Textbox(
+                        label="API Key",
+                        value=ai_writer_config.get("api_key", ""),
+                        type="password",
+                        lines=1,
+                    )
+                    ai_model = gr.Textbox(
+                        label="模型名称 / Endpoint ID",
+                        value=ai_writer_config.get("model", "deepseek-chat"),
+                        lines=1,
+                    )
+                    with gr.Row():
+                        ai_save_config_btn = gr.Button("保存配置", size="sm")
+                        ai_pull_models_btn = gr.Button("拉取模型", size="sm")
+                    ai_images = gr.File(
+                        label="上传图片（最多 10 张）",
+                        file_types=["image"],
+                        file_count="multiple",
+                    )
+                    ai_prompt = gr.Textbox(
+                        label="文案需求",
+                        placeholder="例如：根据图片生成 3 条短视频口播文案，每条 80 到 120 字。",
+                        lines=3,
+                    )
+                    ai_count = gr.Number(label="生成条数", value=3, precision=0)
+                    ai_generate_btn = gr.Button("生成文案", variant="primary", size="sm")
+                    ai_output = gr.Textbox(label="生成结果", lines=8, interactive=True)
+                    ai_status = gr.Textbox(label="", value="", visible=False, interactive=False, lines=2)
+                    ai_insert_btn = gr.Button("引入到目标文本框", size="sm")
                 with gr.Group(visible=False, elem_classes=["settings-panel"]) as settings_panel:
                     show_prompt_text = gr.Checkbox(
                         value=False,
@@ -1070,27 +1149,148 @@ def create_demo_interface(demo: VoxCPMDemo):
                 next_panel,
                 gr.update(visible=next_panel == "examples"),
                 gr.update(visible=next_panel == "modes"),
+                gr.update(visible=next_panel == "ai_writer"),
                 gr.update(visible=next_panel == "settings"),
             )
 
         examples_info_btn.click(
             fn=lambda active_panel: _toggle_info_panel(active_panel, "examples"),
             inputs=[info_panel_state],
-            outputs=[info_panel_state, examples_info_panel, modes_info_panel, settings_panel],
+            outputs=[info_panel_state, examples_info_panel, modes_info_panel, ai_writer_panel, settings_panel],
             show_progress=False,
         )
 
         modes_info_btn.click(
             fn=lambda active_panel: _toggle_info_panel(active_panel, "modes"),
             inputs=[info_panel_state],
-            outputs=[info_panel_state, examples_info_panel, modes_info_panel, settings_panel],
+            outputs=[info_panel_state, examples_info_panel, modes_info_panel, ai_writer_panel, settings_panel],
+            show_progress=False,
+        )
+
+        ai_writer_info_btn.click(
+            fn=lambda active_panel: _toggle_info_panel(active_panel, "ai_writer"),
+            inputs=[info_panel_state],
+            outputs=[info_panel_state, examples_info_panel, modes_info_panel, ai_writer_panel, settings_panel],
             show_progress=False,
         )
 
         settings_info_btn.click(
             fn=lambda active_panel: _toggle_info_panel(active_panel, "settings"),
             inputs=[info_panel_state],
-            outputs=[info_panel_state, examples_info_panel, modes_info_panel, settings_panel],
+            outputs=[info_panel_state, examples_info_panel, modes_info_panel, ai_writer_panel, settings_panel],
+            show_progress=False,
+        )
+
+        def _ai_base_url(provider):
+            return "https://api.deepseek.com" if provider == "DeepSeek" else "https://ark.cn-beijing.volces.com/api/v3"
+
+        def _ai_image_content(image_files):
+            parts = []
+            for item in (image_files or [])[:10]:
+                fpath = item.name if hasattr(item, "name") else item
+                mime = mimetypes.guess_type(fpath)[0] or "image/png"
+                data = base64.b64encode(Path(fpath).read_bytes()).decode("ascii")
+                parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+            return parts
+
+        def _save_ai_writer_config_ui(provider, api_key, model_name):
+            _save_ai_writer_config({
+                "provider": provider,
+                "api_key": api_key or "",
+                "model": model_name or "",
+            })
+            return gr.update(value="配置已保存。", visible=True)
+
+        def _pull_ai_models(provider, api_key):
+            key = (api_key or "").strip()
+            if not key:
+                return gr.update(), gr.update(value="请先填写 API Key。", visible=True)
+            url = f"{_ai_base_url(provider).rstrip('/')}/models"
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+                if not models:
+                    return gr.update(), gr.update(value="没有拉取到模型，请手动填写模型名称。", visible=True)
+                preview = "、".join(models[:8])
+                return gr.update(value=models[0]), gr.update(value=f"已拉取 {len(models)} 个模型：{preview}", visible=True)
+            except Exception as exc:
+                return gr.update(), gr.update(value=f"拉取失败，请手动填写模型名称：{exc}", visible=True)
+
+        def _generate_ai_scripts(provider, api_key, model_name, image_files, prompt_value, count_value):
+            key = (api_key or "").strip()
+            model_name = (model_name or "").strip()
+            prompt_value = (prompt_value or "").strip()
+            if not key:
+                return "", gr.update(value="请先填写 API Key。", visible=True)
+            if not model_name:
+                return "", gr.update(value="请先填写模型名称 / Endpoint ID。", visible=True)
+            if not prompt_value and not image_files:
+                return "", gr.update(value="请填写文案需求，或上传图片。", visible=True)
+            try:
+                count = max(1, min(50, int(count_value or 3)))
+            except Exception:
+                count = 3
+            if provider == "DeepSeek" and image_files:
+                return "", gr.update(value="DeepSeek 模式暂不发送图片；图片生成建议切换到豆包。", visible=True)
+
+            system_prompt = (
+                "你是短视频口播文案助手。请严格按格式输出，不要输出解释、标题或 Markdown。\n"
+                "格式必须是：\n文案 1\n正文\n\n文案 2\n正文\n\n"
+                "每条文案只写需要朗读的正文。"
+            )
+            user_text = f"请生成 {count} 条文案。\n需求：{prompt_value}"
+            content = [{"type": "text", "text": user_text}]
+            if provider == "豆包":
+                content.extend(_ai_image_content(image_files))
+            body = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content if provider == "豆包" else user_text},
+                ],
+                "temperature": 0.8,
+                "max_tokens": min(8192, max(1024, 260 * count)),
+            }
+            req = urllib.request.Request(
+                f"{_ai_base_url(provider).rstrip('/')}/chat/completions",
+                data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                content_text = data["choices"][0]["message"]["content"].strip()
+                blocks = _parse_script_blocks(content_text)
+                return content_text, gr.update(value=f"已生成 {len(blocks) or count} 条文案。", visible=True)
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")
+                return "", gr.update(value=f"生成失败：HTTP {exc.code} {detail}", visible=True)
+            except Exception as exc:
+                return "", gr.update(value=f"生成失败：{exc}", visible=True)
+
+        ai_save_config_btn.click(
+            fn=_save_ai_writer_config_ui,
+            inputs=[ai_provider, ai_api_key, ai_model],
+            outputs=[ai_status],
+            show_progress=False,
+        )
+        ai_pull_models_btn.click(
+            fn=_pull_ai_models,
+            inputs=[ai_provider, ai_api_key],
+            outputs=[ai_model, ai_status],
+        )
+        ai_generate_btn.click(
+            fn=_generate_ai_scripts,
+            inputs=[ai_provider, ai_api_key, ai_model, ai_images, ai_prompt, ai_count],
+            outputs=[ai_output, ai_status],
+        )
+        ai_insert_btn.click(
+            fn=lambda value: gr.update(value=value or ""),
+            inputs=[ai_output],
+            outputs=[text],
             show_progress=False,
         )
 
@@ -1179,11 +1379,15 @@ def create_demo_interface(demo: VoxCPMDemo):
             value = f"{Path(fpath).name}\n编码：{encoding}\n字数：{len(content)}\n\n{preview}"
             return gr.update(value=value, visible=True, lines=10)
 
-        def _prepare_generation_feedback(use_random_seed: bool, seed_value, txt_files):
+        def _prepare_generation_feedback(use_random_seed: bool, seed_value, txt_files, text_value):
             seed = _prepare_seed(use_random_seed, seed_value)
             count = len(txt_files or [])
+            text_blocks = _parse_script_blocks(text_value) if not count else []
+            if text_blocks:
+                count = len(text_blocks)
             if count > 0:
-                status = f"正在生成 {count} 个 TXT 对应的音频，请稍等。生成完成后会提供 ZIP 下载和逐条试听。"
+                source_name = "TXT" if txt_files else "文本框文案"
+                status = f"正在生成 {count} 个 {source_name} 对应的音频，请稍等。生成完成后会提供 ZIP 下载和逐条试听。"
                 return (
                     gr.update(value=None),
                     seed,
@@ -1427,6 +1631,17 @@ def create_demo_interface(demo: VoxCPMDemo):
             BATCH_JOB_EXECUTOR.submit(_run_batch_job, job_id, batch_args)
             return job_id
 
+        def _script_blocks_to_temp_files(blocks):
+            import tempfile
+            out_dir = Path(tempfile.mkdtemp(prefix="voxcpm_textbox_batch_"))
+            paths = []
+            for index, block in enumerate(blocks, 1):
+                safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", block["title"]).strip() or f"文案{index}"
+                path = out_dir / f"{safe_title}.txt"
+                path.write_text(block["text"], encoding="utf-8")
+                paths.append(str(path))
+            return paths
+
         def _poll_batch_job(job_id, manual_selected):
             if not job_id:
                 return (
@@ -1532,9 +1747,11 @@ def create_demo_interface(demo: VoxCPMDemo):
             txt_files,
         ):
             try:
-                if txt_files:
+                script_blocks = _parse_script_blocks(text_value) if not txt_files else []
+                batch_source_files = txt_files or (_script_blocks_to_temp_files(script_blocks) if len(script_blocks) >= 2 else None)
+                if batch_source_files:
                     batch_args = (
-                        txt_files,
+                        batch_source_files,
                         control_instruction_val,
                         ref_wav,
                         use_prompt_text,
@@ -1545,12 +1762,14 @@ def create_demo_interface(demo: VoxCPMDemo):
                         dit_steps_val,
                         seed_val,
                     )
-                    job_id = _start_batch_job(batch_args, len(txt_files or []))
+                    batch_count = len(batch_source_files or [])
+                    source_name = "TXT" if txt_files else "文本框文案"
+                    job_id = _start_batch_job(batch_args, batch_count)
                     return (
                         gr.update(value=None),
                         seed_val,
                         gr.update(visible=False),
-                        gr.update(value=f"已进入后台生成队列：{len(txt_files or [])} 个 TXT。完成后会自动显示 ZIP 和试听下拉框。", visible=True),
+                        gr.update(value=f"已进入后台生成队列：{batch_count} 个 {source_name}。完成后会自动显示 ZIP 和试听下拉框。", visible=True),
                         gr.update(visible=False),
                         gr.update(choices=[], value=None, visible=False),
                         gr.update(value="开始生成", interactive=True),
@@ -1629,7 +1848,7 @@ def create_demo_interface(demo: VoxCPMDemo):
 
         run_btn.click(
             fn=_prepare_generation_feedback,
-            inputs=[random_seed, seed_value, txt_upload],
+            inputs=[random_seed, seed_value, txt_upload, text],
             outputs=[audio_output, seed_value, generation_status, batch_output, batch_result_group, batch_preview_dropdown, run_btn, batch_audio_map, batch_job_id, manual_audio_selection],
             show_progress=False,
         ).then(

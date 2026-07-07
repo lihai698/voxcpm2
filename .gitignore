@@ -12,5 +12,6 @@ runs/
 checkpoints/
 saved_voices/
 voice_library.json
+ai_writer_config.json
 *.log
 *.tmp
