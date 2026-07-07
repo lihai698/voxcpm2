@@ -159,9 +159,7 @@ for _d in _I18N_TRANSLATIONS.values():
 
 I18N = gr.I18n(**_I18N_TRANSLATIONS)
 
-DEFAULT_TARGET_TEXT = (
-    "VoxCPM2 is a creative multilingual TTS model from ModelBest, " "designed to generate highly realistic speech."
-)
+DEFAULT_TARGET_TEXT = ""
 
 _CUSTOM_CSS = """
 .logo-container {
@@ -577,6 +575,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 text = gr.Textbox(
                     value=DEFAULT_TARGET_TEXT,
                     label=I18N("target_text_label"),
+                    placeholder="请输入要合成的文本；上传 TXT 批量生成时这里可以留空",
                     lines=3,
                 )
 
