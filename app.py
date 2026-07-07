@@ -221,19 +221,17 @@ _CUSTOM_CSS = """
     max-height: 108px;
     overflow-y: auto;
 }
-.top-actions {
-    align-items: center;
-    justify-content: flex-end;
-    margin-bottom: 8px;
-}
 .settings-panel {
-    border: 1px solid rgba(128, 128, 128, 0.25);
-    border-radius: 8px;
-    padding: 12px;
-    margin-bottom: 12px;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+    margin-bottom: 8px;
+    background: transparent;
 }
 .info-switch-row button {
     min-width: 0;
+    font-size: 12px !important;
+    padding: 6px 8px !important;
 }
 .compact-result-row {
     align-items: end;
@@ -561,71 +559,6 @@ def create_demo_interface(demo: VoxCPMDemo):
             "</div>"
         )
 
-        with gr.Row(elem_classes=["top-actions"]):
-            open_settings_btn = gr.Button("高级设置", size="sm")
-
-        with gr.Group(visible=False, elem_classes=["settings-panel"]) as settings_panel:
-            with gr.Row():
-                gr.Markdown("### 高级设置")
-                close_settings_btn = gr.Button("关闭", size="sm")
-            show_prompt_text = gr.Checkbox(
-                value=False,
-                label=I18N("show_prompt_text_label"),
-                info=I18N("show_prompt_text_info"),
-                elem_classes=["switch-toggle"],
-            )
-            prompt_text = gr.Textbox(
-                value="",
-                label=I18N("prompt_text_label"),
-                placeholder=I18N("prompt_text_placeholder"),
-                lines=2,
-                visible=False,
-            )
-            with gr.Row():
-                DoDenoisePromptAudio = gr.Checkbox(
-                    value=False,
-                    label=I18N("ref_denoise_label"),
-                    elem_classes=["switch-toggle"],
-                    info=I18N("ref_denoise_info"),
-                )
-                DoNormalizeText = gr.Checkbox(
-                    value=False,
-                    label=I18N("normalize_label"),
-                    elem_classes=["switch-toggle"],
-                    info=I18N("normalize_info"),
-                )
-            with gr.Row():
-                cfg_value = gr.Slider(
-                    minimum=1.0,
-                    maximum=3.0,
-                    value=2.0,
-                    step=0.1,
-                    label=I18N("cfg_label"),
-                    info=I18N("cfg_info"),
-                )
-                dit_steps = gr.Slider(
-                    minimum=1,
-                    maximum=50,
-                    value=10,
-                    step=1,
-                    label=I18N("dit_steps_label"),
-                    info=I18N("dit_steps_info"),
-                )
-            with gr.Row():
-                seed_value = gr.Number(
-                    value=random.randint(0, 2**32 - 1),
-                    precision=0,
-                    label=I18N("seed_label"),
-                    info=I18N("seed_info"),
-                    interactive=False,
-                )
-                random_seed = gr.Checkbox(
-                    value=True,
-                    label=I18N("random_seed_label"),
-                    elem_classes=["switch-toggle"],
-                    info=I18N("random_seed_info"),
-                )
-
         with gr.Row():
             with gr.Column():
                 reference_wav = gr.Audio(
@@ -707,30 +640,81 @@ def create_demo_interface(demo: VoxCPMDemo):
                 with gr.Row(elem_classes=["info-switch-row"]):
                     examples_info_btn = gr.Button("使用示例 / 方言提示", size="sm")
                     modes_info_btn = gr.Button("VoxCPM2 三种语音生成模式", size="sm")
+                    settings_info_btn = gr.Button("高级设置", size="sm")
                 examples_info_panel = gr.Markdown(I18N("examples_footer"), visible=False)
                 modes_info_panel = gr.Markdown(I18N("usage_instructions"), visible=False)
-
-        open_settings_btn.click(
-            fn=lambda: gr.update(visible=True),
-            outputs=[settings_panel],
-            show_progress=False,
-        )
-
-        close_settings_btn.click(
-            fn=lambda: gr.update(visible=False),
-            outputs=[settings_panel],
-            show_progress=False,
-        )
+                with gr.Group(visible=False, elem_classes=["settings-panel"]) as settings_panel:
+                    show_prompt_text = gr.Checkbox(
+                        value=False,
+                        label=I18N("show_prompt_text_label"),
+                        info=I18N("show_prompt_text_info"),
+                        elem_classes=["switch-toggle"],
+                    )
+                    prompt_text = gr.Textbox(
+                        value="",
+                        label=I18N("prompt_text_label"),
+                        placeholder=I18N("prompt_text_placeholder"),
+                        lines=2,
+                        visible=False,
+                    )
+                    DoDenoisePromptAudio = gr.Checkbox(
+                        value=False,
+                        label=I18N("ref_denoise_label"),
+                        elem_classes=["switch-toggle"],
+                        info=I18N("ref_denoise_info"),
+                    )
+                    DoNormalizeText = gr.Checkbox(
+                        value=False,
+                        label=I18N("normalize_label"),
+                        elem_classes=["switch-toggle"],
+                        info=I18N("normalize_info"),
+                    )
+                    cfg_value = gr.Slider(
+                        minimum=1.0,
+                        maximum=3.0,
+                        value=2.0,
+                        step=0.1,
+                        label=I18N("cfg_label"),
+                        info=I18N("cfg_info"),
+                    )
+                    dit_steps = gr.Slider(
+                        minimum=1,
+                        maximum=50,
+                        value=10,
+                        step=1,
+                        label=I18N("dit_steps_label"),
+                        info=I18N("dit_steps_info"),
+                    )
+                    with gr.Row():
+                        seed_value = gr.Number(
+                            value=random.randint(0, 2**32 - 1),
+                            precision=0,
+                            label=I18N("seed_label"),
+                            info=I18N("seed_info"),
+                            interactive=False,
+                        )
+                        random_seed = gr.Checkbox(
+                            value=True,
+                            label=I18N("random_seed_label"),
+                            elem_classes=["switch-toggle"],
+                            info=I18N("random_seed_info"),
+                        )
 
         examples_info_btn.click(
-            fn=lambda: (gr.update(visible=True), gr.update(visible=False)),
-            outputs=[examples_info_panel, modes_info_panel],
+            fn=lambda: (gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)),
+            outputs=[examples_info_panel, modes_info_panel, settings_panel],
             show_progress=False,
         )
 
         modes_info_btn.click(
-            fn=lambda: (gr.update(visible=False), gr.update(visible=True)),
-            outputs=[examples_info_panel, modes_info_panel],
+            fn=lambda: (gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)),
+            outputs=[examples_info_panel, modes_info_panel, settings_panel],
+            show_progress=False,
+        )
+
+        settings_info_btn.click(
+            fn=lambda: (gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)),
+            outputs=[examples_info_panel, modes_info_panel, settings_panel],
             show_progress=False,
         )
 
