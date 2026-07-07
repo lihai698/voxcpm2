@@ -585,6 +585,16 @@ def create_demo_interface(demo: VoxCPMDemo):
                     file_count="multiple",
                     elem_classes=["txt-upload-limited"],
                 )
+                txt_preview_dropdown = gr.Dropdown(
+                    label="选择预览 TXT",
+                    choices=[],
+                    value=None,
+                    visible=False,
+                    interactive=True,
+                )
+                with gr.Row():
+                    preview_txt_btn = gr.Button("预览TXT内容", size="sm")
+                    hide_txt_preview_btn = gr.Button("收起预览", size="sm")
                 txt_status = gr.Textbox(
                     label="TXT 读取状态",
                     value="",
@@ -592,7 +602,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                     interactive=False,
                     lines=3,
                 )
-                batch_generate_btn = gr.Button("开始批量生成 TXT", variant="secondary")
 
                 with gr.Accordion(I18N("advanced_settings_title"), open=False):
                     DoDenoisePromptAudio = gr.Checkbox(
@@ -696,30 +705,6 @@ def create_demo_interface(demo: VoxCPMDemo):
             outputs=[seed_value],
         )
 
-        run_btn.click(
-            fn=_prepare_seed,
-            inputs=[random_seed, seed_value],
-            outputs=[seed_value],
-            show_progress=False,
-        ).then(
-            fn=_generate,
-            inputs=[
-                text,
-                control_instruction,
-                reference_wav,
-                show_prompt_text,
-                prompt_text,
-                cfg_value,
-                DoNormalizeText,
-                DoDenoisePromptAudio,
-                dit_steps,
-                seed_value,
-            ],
-            outputs=[audio_output, seed_value],
-            show_progress=True,
-            api_name="generate",
-        )
-
         # ─── 批量 TXT 生成 ───
         def _read_txt_file(fpath):
             path = Path(fpath)
@@ -744,42 +729,53 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(value="", visible=False),
                     gr.update(visible=False),
                     gr.update(choices=[], value=None, visible=False),
+                    gr.update(choices=[], value=None, visible=False, label="选择预览 TXT"),
                     gr.update(value=None, visible=False),
                 )
 
-            total_chars = 0
-            lines = [f"已选择 {len(txt_files)} 个 TXT。点击“开始批量生成 TXT”后，每个 TXT 会生成 1 条音频，并统一打包为 ZIP。"]
-            preview_limit = 8
-            for index, f in enumerate(txt_files[:preview_limit], 1):
+            choices = []
+            for f in txt_files:
                 fpath = f.name if hasattr(f, "name") else f
-                try:
-                    content, encoding = _read_txt_file(fpath)
-                    total_chars += len(content)
-                    preview = re.sub(r"\s+", " ", content[:48])
-                    lines.append(f"{index}. {Path(fpath).name}：{len(content)} 字，{encoding}，预览：{preview}")
-                except Exception as e:
-                    lines.append(f"{index}. {Path(fpath).name}：读取失败（{e}）")
-            if len(txt_files) > preview_limit:
-                lines.append(f"... 还有 {len(txt_files) - preview_limit} 个文件已收起显示。")
-            lines.append(f"当前预览统计：前 {min(len(txt_files), preview_limit)} 个文件共 {total_chars} 字。")
+                choices.append((Path(fpath).name, fpath))
+            first_value = choices[0][1] if choices else None
             return (
-                gr.update(value="\n".join(lines), visible=True),
+                gr.update(value="", visible=False),
                 gr.update(visible=False),
+                gr.update(choices=choices, value=first_value, visible=True, label=f"选择预览 TXT（共 {len(txt_files)} 个）"),
                 gr.update(choices=[], value=None, visible=False),
                 gr.update(value=None, visible=False),
             )
 
-        def _batch_start_feedback(txt_files):
+        def _show_txt_preview(fpath):
+            if not fpath:
+                return gr.update(value="请先选择一个 TXT 文件。", visible=True, lines=3)
+            try:
+                content, encoding = _read_txt_file(fpath)
+            except Exception as e:
+                return gr.update(value=f"读取失败：{e}", visible=True, lines=3)
+
+            max_preview_chars = 3000
+            preview = content[:max_preview_chars]
+            if len(content) > max_preview_chars:
+                preview += f"\n\n... 已截断预览，全文共 {len(content)} 字。"
+            value = f"{Path(fpath).name}\n编码：{encoding}\n字数：{len(content)}\n\n{preview}"
+            return gr.update(value=value, visible=True, lines=10)
+
+        def _prepare_generation_feedback(use_random_seed: bool, seed_value, txt_files):
+            seed = _prepare_seed(use_random_seed, seed_value)
             count = len(txt_files or [])
-            if count == 0:
+            if count > 0:
+                status = f"正在生成 {count} 个 TXT 对应的音频，请稍等。生成完成后会提供 ZIP 下载和逐条试听。"
                 return (
-                    gr.update(value="请先上传 TXT 文件。", visible=True),
+                    seed,
+                    gr.update(value=status, visible=True),
                     gr.update(visible=False),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value=None, visible=False),
                 )
             return (
-                gr.update(value=f"正在生成 {count} 个 TXT 对应的音频，请稍等。生成完成后会提供 ZIP 下载和逐条试听。", visible=True),
+                seed,
+                gr.update(value="", visible=False),
                 gr.update(visible=False),
                 gr.update(choices=[], value=None, visible=False),
                 gr.update(value=None, visible=False),
@@ -872,28 +868,100 @@ def create_demo_interface(demo: VoxCPMDemo):
                 gr.update(value=first_audio, visible=True),
             )
 
+        def _generate_or_batch(
+            text_value,
+            control_instruction_val,
+            ref_wav,
+            use_prompt_text,
+            prompt_text_val,
+            cfg_val,
+            do_normalize,
+            denoise,
+            dit_steps_val,
+            seed_val,
+            txt_files,
+        ):
+            if txt_files:
+                batch_file, status, preview_choices, preview_audio = _batch_generate(
+                    txt_files,
+                    control_instruction_val,
+                    ref_wav,
+                    use_prompt_text,
+                    prompt_text_val,
+                    cfg_val,
+                    do_normalize,
+                    denoise,
+                    dit_steps_val,
+                    seed_val,
+                )
+                return (
+                    gr.update(value=None),
+                    seed_val,
+                    batch_file,
+                    status,
+                    preview_choices,
+                    preview_audio,
+                )
+
+            audio, last_successful_seed = _generate(
+                text_value,
+                control_instruction_val,
+                ref_wav,
+                use_prompt_text,
+                prompt_text_val,
+                cfg_val,
+                do_normalize,
+                denoise,
+                dit_steps_val,
+                seed_val,
+            )
+            return (
+                audio,
+                last_successful_seed,
+                gr.update(visible=False),
+                gr.update(value="", visible=False),
+                gr.update(choices=[], value=None, visible=False),
+                gr.update(value=None, visible=False),
+            )
+
         txt_upload.change(
             fn=_preview_txt_files,
             inputs=[txt_upload],
-            outputs=[txt_status, batch_output, batch_preview_dropdown, batch_preview_audio],
+            outputs=[txt_status, batch_output, txt_preview_dropdown, batch_preview_dropdown, batch_preview_audio],
             show_progress=False,
         )
 
-        batch_generate_btn.click(
-            fn=_batch_start_feedback,
-            inputs=[txt_upload],
-            outputs=[txt_status, batch_output, batch_preview_dropdown, batch_preview_audio],
+        preview_txt_btn.click(
+            fn=_show_txt_preview,
+            inputs=[txt_preview_dropdown],
+            outputs=[txt_status],
+            show_progress=False,
+        )
+
+        hide_txt_preview_btn.click(
+            fn=lambda: gr.update(value="", visible=False),
+            outputs=[txt_status],
+            show_progress=False,
+        )
+
+        run_btn.click(
+            fn=_prepare_generation_feedback,
+            inputs=[random_seed, seed_value, txt_upload],
+            outputs=[seed_value, txt_status, batch_output, batch_preview_dropdown, batch_preview_audio],
             show_progress=False,
         ).then(
-            fn=_batch_generate,
+            fn=_generate_or_batch,
             inputs=[
-                txt_upload, control_instruction, reference_wav,
+                text,
+                control_instruction,
+                reference_wav,
                 show_prompt_text, prompt_text,
                 cfg_value, DoNormalizeText, DoDenoisePromptAudio,
-                dit_steps, seed_value,
+                dit_steps, seed_value, txt_upload,
             ],
-            outputs=[batch_output, txt_status, batch_preview_dropdown, batch_preview_audio],
+            outputs=[audio_output, seed_value, batch_output, txt_status, batch_preview_dropdown, batch_preview_audio],
             show_progress=True,
+            api_name="generate",
         )
 
         batch_preview_dropdown.change(
