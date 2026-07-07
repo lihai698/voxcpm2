@@ -364,6 +364,12 @@ _CUSTOM_CSS = """
 .compact-result-row .wrap {
     min-height: 0 !important;
 }
+#batch-audio-selector [role="listbox"],
+#batch-audio-selector .options,
+#batch-audio-selector ul {
+    max-height: 220px !important;
+    overflow-y: auto !important;
+}
 """
 
 _APP_THEME = gr.themes.Soft(
@@ -927,6 +933,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                             visible=True,
                             interactive=True,
                             scale=2,
+                            elem_id="batch-audio-selector",
                         )
                         batch_output = gr.DownloadButton(label="下载全部 ZIP", visible=True, size="sm", scale=1)
                 batch_audio_map = gr.State({})
