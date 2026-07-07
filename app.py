@@ -6,6 +6,7 @@ import random
 import time
 import numpy as np
 import gradio as gr
+import torch
 from typing import Optional, Tuple
 from funasr import AutoModel
 from pathlib import Path
@@ -371,6 +372,8 @@ import shutil
 VOICE_LIB_PATH = Path(__file__).parent / "voice_library.json"
 VOICES_DIR = Path(__file__).parent / "saved_voices"
 VOICES_DIR.mkdir(exist_ok=True)
+VOICE_CACHE_DIR = VOICES_DIR / "_cache"
+VOICE_CACHE_DIR.mkdir(exist_ok=True)
 VOICE_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
 
 
@@ -387,6 +390,83 @@ def _load_voice_lib():
 
 def _save_voice_lib(data):
     VOICE_LIB_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _safe_voice_filename(name: str) -> str:
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (name or "").strip())
+    return safe or "voice"
+
+
+def _voice_cache_path(name: str) -> Path:
+    return VOICE_CACHE_DIR / f"{_safe_voice_filename(name)}.prompt_cache.pt"
+
+
+def _load_prompt_cache_file(cache_path: str | Path):
+    path = Path(cache_path)
+    if not path.exists():
+        return None
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def _save_prompt_cache_file(cache, cache_path: str | Path):
+    path = Path(cache_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(cache, path)
+
+
+def _find_voice_cache_for_audio(audio_path: Optional[str], prompt_text_value: str = "") -> Optional[Path]:
+    entry = _find_voice_entry_for_audio(audio_path, prompt_text_value)
+    if not entry:
+        return None
+    cache_path = entry.get("prompt_cache")
+    if cache_path and Path(cache_path).exists():
+        return Path(cache_path)
+    return None
+
+
+def _find_voice_entry_for_audio(audio_path: Optional[str], prompt_text_value: str = "") -> Optional[dict]:
+    if not audio_path or (prompt_text_value or "").strip():
+        return None
+    try:
+        target = Path(audio_path).resolve()
+    except OSError:
+        return None
+
+    for entry in _get_voice_entries():
+        if entry.get("type") != "clone":
+            continue
+        entry_audio = entry.get("audio")
+        if not entry_audio:
+            continue
+        try:
+            if Path(entry_audio).resolve() == target:
+                return entry
+        except OSError:
+            continue
+    return None
+
+
+def _remember_voice_cache(audio_path: Optional[str], cache_path: Path):
+    if not audio_path:
+        return
+    try:
+        target = Path(audio_path).resolve()
+    except OSError:
+        return
+
+    lib = _load_voice_lib()
+    changed = False
+    for entry in lib:
+        if entry.get("type") != "clone" or not entry.get("audio"):
+            continue
+        try:
+            if Path(entry["audio"]).resolve() == target:
+                entry["prompt_cache"] = str(cache_path)
+                changed = True
+        except OSError:
+            continue
+    if changed:
+        _save_voice_lib(lib)
 
 
 def _get_voice_entries():
@@ -1065,12 +1145,24 @@ def create_demo_interface(demo: VoxCPMDemo):
             if ref_wav:
                 progress(0, desc="正在准备参考音频缓存")
                 try:
-                    prompt_cache = demo.get_or_load_voxcpm().prepare_prompt_cache(
-                        prompt_wav_path=ref_wav if actual_prompt else None,
-                        prompt_text=actual_prompt or None,
-                        reference_wav_path=ref_wav,
-                        denoise=denoise,
-                    )
+                    persistent_cache_path = _find_voice_cache_for_audio(ref_wav, actual_prompt)
+                    if persistent_cache_path:
+                        prompt_cache = _load_prompt_cache_file(persistent_cache_path)
+                        logger.info("Loaded persistent voice prompt cache: %s", persistent_cache_path)
+                    if prompt_cache is None:
+                        prompt_cache = demo.get_or_load_voxcpm().prepare_prompt_cache(
+                            prompt_wav_path=ref_wav if actual_prompt else None,
+                            prompt_text=actual_prompt or None,
+                            reference_wav_path=ref_wav,
+                            denoise=denoise,
+                        )
+                        if not actual_prompt:
+                            voice_entry = _find_voice_entry_for_audio(ref_wav, actual_prompt)
+                            if voice_entry and voice_entry.get("name"):
+                                cache_path = _voice_cache_path(str(voice_entry["name"]))
+                                _save_prompt_cache_file(prompt_cache, cache_path)
+                                _remember_voice_cache(ref_wav, cache_path)
+                                logger.info("Saved persistent voice prompt cache: %s", cache_path)
                 except Exception as exc:
                     logger.exception("Failed to prepare prompt cache.")
                     raise friendly_runtime_error(exc) from exc
@@ -1314,17 +1406,32 @@ def create_demo_interface(demo: VoxCPMDemo):
                 return "请输入音色名称"
             if not ref_audio:
                 return "请先上传参考音频"
+            voice_name = name.strip()
             lib = _load_voice_lib()
-            audio_copy = VOICES_DIR / f"{name.strip()}.wav"
+            audio_copy = VOICES_DIR / f"{_safe_voice_filename(voice_name)}.wav"
             shutil.copy2(ref_audio, audio_copy)
+            cache_path = _voice_cache_path(voice_name)
+            cache_status = ""
+            try:
+                cache = demo.get_or_load_voxcpm().prepare_prompt_cache(
+                    reference_wav_path=str(audio_copy),
+                    denoise=False,
+                )
+                _save_prompt_cache_file(cache, cache_path)
+                cache_status = "，缓存已生成"
+            except Exception as exc:
+                logger.exception("Failed to save voice prompt cache.")
+                cache_path = None
+                cache_status = f"，但缓存生成失败：{friendly_runtime_error(exc)}"
             lib.append({
-                "name": name.strip(),
+                "name": voice_name,
                 "type": "clone",
                 "audio": str(audio_copy),
                 "asr_text": asr_text or "",
+                "prompt_cache": str(cache_path) if cache_path else "",
             })
             _save_voice_lib(lib)
-            return f"✓ 已保存: [克隆] {name.strip()}"
+            return f"✓ 已保存: [克隆] {voice_name}{cache_status}"
 
         save_clone_btn.click(
             fn=_save_voice_clone,
