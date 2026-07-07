@@ -629,7 +629,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 batch_preview_audio = gr.Audio(label="当前试听音频", visible=False)
 
                 # 保存音色
-                with gr.Accordion("💾 保存音色", open=False):
+                with gr.Accordion("保存音色", open=False):
                     voice_lib_dropdown = gr.Dropdown(
                         choices=_get_voice_choices(),
                         value=None,
@@ -650,6 +650,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     settings_info_btn = gr.Button("高级设置", size="sm")
                 examples_info_panel = gr.Markdown(I18N("examples_footer"), visible=False)
                 modes_info_panel = gr.Markdown(I18N("usage_instructions"), visible=False)
+                info_panel_state = gr.State("")
                 with gr.Group(visible=False, elem_classes=["settings-panel"]) as settings_panel:
                     show_prompt_text = gr.Checkbox(
                         value=False,
@@ -707,21 +708,33 @@ def create_demo_interface(demo: VoxCPMDemo):
                             info=I18N("random_seed_info"),
                         )
 
+        def _toggle_info_panel(active_panel, target_panel):
+            next_panel = "" if active_panel == target_panel else target_panel
+            return (
+                next_panel,
+                gr.update(visible=next_panel == "examples"),
+                gr.update(visible=next_panel == "modes"),
+                gr.update(visible=next_panel == "settings"),
+            )
+
         examples_info_btn.click(
-            fn=lambda: (gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)),
-            outputs=[examples_info_panel, modes_info_panel, settings_panel],
+            fn=lambda active_panel: _toggle_info_panel(active_panel, "examples"),
+            inputs=[info_panel_state],
+            outputs=[info_panel_state, examples_info_panel, modes_info_panel, settings_panel],
             show_progress=False,
         )
 
         modes_info_btn.click(
-            fn=lambda: (gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)),
-            outputs=[examples_info_panel, modes_info_panel, settings_panel],
+            fn=lambda active_panel: _toggle_info_panel(active_panel, "modes"),
+            inputs=[info_panel_state],
+            outputs=[info_panel_state, examples_info_panel, modes_info_panel, settings_panel],
             show_progress=False,
         )
 
         settings_info_btn.click(
-            fn=lambda: (gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)),
-            outputs=[examples_info_panel, modes_info_panel, settings_panel],
+            fn=lambda active_panel: _toggle_info_panel(active_panel, "settings"),
+            inputs=[info_panel_state],
+            outputs=[info_panel_state, examples_info_panel, modes_info_panel, settings_panel],
             show_progress=False,
         )
 
