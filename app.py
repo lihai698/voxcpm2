@@ -238,11 +238,17 @@ import shutil
 VOICE_LIB_PATH = Path(__file__).parent / "voice_library.json"
 VOICES_DIR = Path(__file__).parent / "saved_voices"
 VOICES_DIR.mkdir(exist_ok=True)
+VOICE_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
 
 
 def _load_voice_lib():
     if VOICE_LIB_PATH.exists():
-        return json.loads(VOICE_LIB_PATH.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(VOICE_LIB_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            logger.warning(f"Failed to load voice library: {exc}")
+            return []
     return []
 
 
@@ -250,11 +256,36 @@ def _save_voice_lib(data):
     VOICE_LIB_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _get_voice_entries():
+    entries = list(_load_voice_lib())
+    seen = {
+        (str(v.get("type", "")), str(v.get("name", "")))
+        for v in entries
+        if isinstance(v, dict)
+    }
+    for audio_path in sorted(VOICES_DIR.iterdir()):
+        if not audio_path.is_file() or audio_path.suffix.lower() not in VOICE_AUDIO_EXTS:
+            continue
+        name = audio_path.stem
+        key = ("clone", name)
+        if key in seen:
+            continue
+        entries.append({
+            "name": name,
+            "type": "clone",
+            "audio": str(audio_path),
+            "asr_text": "",
+            "auto_scanned": True,
+        })
+        seen.add(key)
+    return entries
+
+
 def _get_voice_choices():
-    lib = _load_voice_lib()
-    if not lib:
+    entries = _get_voice_entries()
+    if not entries:
         return ["(空)"]
-    return [f"[{'克隆' if v['type']=='clone' else '设计'}] {v['name']}" for v in lib]
+    return [f"[{'克隆' if v['type']=='clone' else '设计'}] {v['name']}" for v in entries]
 
 
 # ---------- Model ----------
@@ -622,6 +653,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                         label="📂 本地音色库（选择后自动加载）",
                         interactive=True,
                     )
+                    refresh_voice_lib_btn = gr.Button("刷新音色库", size="sm")
                     voice_name_input = gr.Textbox(
                         label="音色名称", placeholder="输入名称...", lines=1)
                     with gr.Row():
@@ -827,11 +859,16 @@ def create_demo_interface(demo: VoxCPMDemo):
             outputs=[voice_lib_dropdown],
         )
 
+        refresh_voice_lib_btn.click(
+            fn=lambda: gr.update(choices=_get_voice_choices(), value=None),
+            outputs=[voice_lib_dropdown],
+        )
+
         # ─── 加载音色 ───
         def _load_voice(choice):
             if not choice or choice == "(空)":
                 return [gr.update()] * 4
-            lib = _load_voice_lib()
+            lib = _get_voice_entries()
             tag = "克隆" if "[克隆]" in choice else "设计"
             name = choice.split("] ")[1] if "] " in choice else choice
             for v in lib:
