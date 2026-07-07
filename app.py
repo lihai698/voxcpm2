@@ -652,16 +652,16 @@ def create_demo_interface(demo: VoxCPMDemo):
                     file_count="multiple",
                     elem_classes=["txt-upload-limited"],
                 )
-                txt_preview_dropdown = gr.Dropdown(
-                    label="选择预览 TXT",
-                    choices=[],
-                    value=None,
-                    visible=False,
-                    interactive=True,
-                )
-                with gr.Row():
-                    preview_txt_btn = gr.Button("预览TXT内容", size="sm")
-                    hide_txt_preview_btn = gr.Button("收起预览", size="sm")
+                with gr.Group(visible=False) as txt_preview_group:
+                    txt_preview_dropdown = gr.Dropdown(
+                        label="选择预览 TXT",
+                        choices=[],
+                        value=None,
+                        interactive=True,
+                    )
+                    with gr.Row():
+                        preview_txt_btn = gr.Button("预览TXT内容", size="sm")
+                        hide_txt_preview_btn = gr.Button("收起预览", size="sm")
                 txt_status = gr.Textbox(
                     label="TXT 读取状态",
                     value="",
@@ -780,8 +780,9 @@ def create_demo_interface(demo: VoxCPMDemo):
                 return (
                     gr.update(value="", visible=False),
                     gr.update(visible=False),
+                    gr.update(visible=False),
                     gr.update(choices=[], value=None, visible=False),
-                    gr.update(choices=[], value=None, visible=False, label="选择预览 TXT"),
+                    gr.update(choices=[], value=None, visible=False),
                     gr.update(value=None, visible=False),
                 )
 
@@ -793,7 +794,8 @@ def create_demo_interface(demo: VoxCPMDemo):
             return (
                 gr.update(value="", visible=False),
                 gr.update(visible=False),
-                gr.update(choices=choices, value=first_value, visible=True, label=f"选择预览 TXT（共 {len(txt_files)} 个）"),
+                gr.update(visible=True),
+                gr.update(choices=choices, value=first_value, label=f"选择预览 TXT（共 {len(txt_files)} 个）"),
                 gr.update(choices=[], value=None, visible=False),
                 gr.update(value=None, visible=False),
             )
@@ -979,7 +981,7 @@ def create_demo_interface(demo: VoxCPMDemo):
         txt_upload.change(
             fn=_preview_txt_files,
             inputs=[txt_upload],
-            outputs=[txt_status, batch_output, txt_preview_dropdown, batch_preview_dropdown, batch_preview_audio],
+            outputs=[txt_status, batch_output, txt_preview_group, txt_preview_dropdown, batch_preview_dropdown, batch_preview_audio],
             show_progress=False,
         )
 
