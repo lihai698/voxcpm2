@@ -36,27 +36,38 @@ def _split_text_for_tts(text: str, max_chars: int = MAX_BATCH_CHUNK_CHARS) -> li
     if not clean:
         return []
 
-    sentences = [
-        part.strip()
-        for part in re.split(r"(?<=[。！？!?；;])\s*", clean)
-        if part.strip()
-    ]
-    if not sentences:
-        sentences = [clean]
+    def split_long_piece(piece: str) -> list[str]:
+        piece = piece.strip()
+        if len(piece) <= max_chars:
+            return [piece] if piece else []
+
+        # Prefer natural sentence boundaries, then clause boundaries, and only
+        # hard-split as the final fallback for very long sentences.
+        for pattern in (r"(?<=[。！？!?])\s*", r"(?<=[；;])\s*", r"(?<=[，,、])\s*"):
+            parts = [part.strip() for part in re.split(pattern, piece) if part.strip()]
+            if len(parts) > 1 and max(len(part) for part in parts) < len(piece):
+                merged: list[str] = []
+                current = ""
+                for part in parts:
+                    candidate = f"{current}{part}" if current else part
+                    if current and len(candidate) > max_chars:
+                        merged.extend(split_long_piece(current))
+                        current = part
+                    else:
+                        current = candidate
+                if current:
+                    merged.extend(split_long_piece(current))
+                return merged
+
+        return [piece[start : start + max_chars].strip() for start in range(0, len(piece), max_chars) if piece[start : start + max_chars].strip()]
+
+    sentences = []
+    for paragraph in re.split(r"\n\s*\n+", (text or "").strip()):
+        sentences.extend(split_long_piece(paragraph))
 
     chunks: list[str] = []
     current = ""
     for sentence in sentences:
-        if len(sentence) > max_chars:
-            if current:
-                chunks.append(current)
-                current = ""
-            for start in range(0, len(sentence), max_chars):
-                piece = sentence[start : start + max_chars].strip()
-                if piece:
-                    chunks.append(piece)
-            continue
-
         candidate = f"{current}{sentence}" if current else sentence
         if current and len(candidate) > max_chars:
             chunks.append(current)
@@ -598,6 +609,52 @@ class VoxCPMDemo:
         last_successful_seed = getattr(current_model.tts_model, "last_successful_seed", seed)
         return (current_model.tts_model.sample_rate, wav, last_successful_seed)
 
+    def generate_tts_audio_with_prompt_cache(
+        self,
+        text_input: str,
+        control_instruction: str,
+        prompt_cache,
+        cfg_value_input: float = 2.0,
+        do_normalize: bool = True,
+        inference_timesteps: int = 10,
+        seed: Optional[int] = None,
+        retry_badcase: bool = True,
+    ) -> Tuple[int, np.ndarray, Optional[int]]:
+        current_model = self.get_or_load_voxcpm()
+
+        text = (text_input or "").strip()
+        if len(text) == 0:
+            raise ValueError("Please input text to synthesize.")
+
+        control = (control_instruction or "").strip()
+        control = re.sub(r"[()（）]", "", control).strip()
+        final_text = f"({control}){text}" if control else text
+
+        start_time = time.perf_counter()
+        logger.info(
+            "Generating cached audio: chars=%s, steps=%s, retry_badcase=%s, text='%s...'",
+            len(text),
+            inference_timesteps,
+            retry_badcase,
+            final_text[:80],
+        )
+        try:
+            wav = current_model.generate_with_prompt_cache(
+                text=final_text,
+                prompt_cache=prompt_cache,
+                cfg_value=float(cfg_value_input),
+                inference_timesteps=inference_timesteps,
+                normalize=do_normalize,
+                retry_badcase=retry_badcase,
+                seed=seed,
+            )
+        except Exception as exc:
+            logger.exception("VoxCPM cached generation failed.")
+            raise friendly_runtime_error(exc) from exc
+        logger.info("Cached generation finished in %.1fs for %s chars.", time.perf_counter() - start_time, len(text))
+        last_successful_seed = getattr(current_model.tts_model, "last_successful_seed", seed)
+        return (current_model.tts_model.sample_rate, wav, last_successful_seed)
+
 
 # ---------- UI ----------
 
@@ -978,6 +1035,7 @@ def create_demo_interface(demo: VoxCPMDemo):
             denoise,
             dit_steps_val,
             seed_val,
+            progress=gr.Progress(track_tqdm=False),
         ):
             if not txt_files:
                 return (
@@ -995,6 +1053,22 @@ def create_demo_interface(demo: VoxCPMDemo):
             hidden_success_count = 0
             generated_count = 0
             batch_start_time = time.perf_counter()
+            actual_prompt = prompt_text_val.strip() if use_prompt_text else ""
+            actual_ctrl = "" if use_prompt_text else control_instruction_val
+            prompt_cache = None
+            if ref_wav:
+                progress(0, desc="正在准备参考音频缓存")
+                try:
+                    prompt_cache = demo.get_or_load_voxcpm().prepare_prompt_cache(
+                        prompt_wav_path=ref_wav if actual_prompt else None,
+                        prompt_text=actual_prompt or None,
+                        reference_wav_path=ref_wav,
+                        denoise=denoise,
+                    )
+                except Exception as exc:
+                    logger.exception("Failed to prepare prompt cache.")
+                    raise friendly_runtime_error(exc) from exc
+
             for index, f in enumerate(txt_files, 1):
                 fpath = f.name if hasattr(f, 'name') else f
                 try:
@@ -1017,8 +1091,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                     status_lines.append(f"Empty TXT: {Path(fpath).name}")
                     continue
                 seed = _prepare_seed(True, seed_val)
-                actual_prompt = prompt_text_val.strip() if use_prompt_text else ""
-                actual_ctrl = "" if use_prompt_text else control_instruction_val
                 try:
                     logger.info(
                         "Batch item %s/%s: %s, chars=%s, chunks=%s",
@@ -1031,14 +1103,16 @@ def create_demo_interface(demo: VoxCPMDemo):
                     chunk_wavs = []
                     sr = None
                     for chunk_index, chunk in enumerate(chunks, 1):
-                        chunk_sr, chunk_wav, _ = demo.generate_tts_audio(
+                        progress(
+                            ((index - 1) + (chunk_index - 1) / max(1, len(chunks))) / max(1, len(txt_files)),
+                            desc=f"正在生成 {Path(fpath).name}：{chunk_index}/{len(chunks)}",
+                        )
+                        chunk_sr, chunk_wav, _ = demo.generate_tts_audio_with_prompt_cache(
                             text_input=chunk,
                             control_instruction=actual_ctrl,
-                            reference_wav_path_input=ref_wav,
-                            prompt_text=actual_prompt,
+                            prompt_cache=prompt_cache,
                             cfg_value_input=cfg_val,
                             do_normalize=do_normalize,
-                            denoise=denoise,
                             inference_timesteps=int(dit_steps_val),
                             seed=seed,
                             retry_badcase=True,
@@ -1061,6 +1135,8 @@ def create_demo_interface(demo: VoxCPMDemo):
                 except Exception as e:
                     logger.error(f"Batch gen failed for {fpath}: {e}")
                     status_lines.append(f"生成失败：{Path(fpath).name}（{e}）")
+
+            progress(1, desc="批量生成完成")
 
             if generated_count == 0:
                 status = "\n".join(status_lines) if status_lines else "没有可生成的 TXT 内容。"

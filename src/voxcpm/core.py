@@ -180,6 +180,106 @@ class VoxCPM:
     def generate_streaming(self, *args, **kwargs) -> Generator[np.ndarray, None, None]:
         return self._generate(*args, streaming=True, **kwargs)
 
+    def prepare_prompt_cache(
+        self,
+        prompt_wav_path: str = None,
+        prompt_text: str = None,
+        reference_wav_path: str = None,
+        denoise: bool = False,
+    ):
+        """Build reusable prompt/reference audio features for repeated generation."""
+        if prompt_wav_path is not None and not os.path.exists(prompt_wav_path):
+            raise FileNotFoundError(f"prompt_wav_path does not exist: {prompt_wav_path}")
+        if reference_wav_path is not None and not os.path.exists(reference_wav_path):
+            raise FileNotFoundError(f"reference_wav_path does not exist: {reference_wav_path}")
+        if (prompt_wav_path is None) != (prompt_text is None):
+            raise ValueError("prompt_wav_path and prompt_text must both be provided or both be None")
+
+        is_v2 = isinstance(self.tts_model, VoxCPM2Model)
+        if reference_wav_path is not None and not is_v2:
+            raise ValueError("reference_wav_path is only supported with VoxCPM2 models")
+        if prompt_wav_path is None and reference_wav_path is None:
+            return None
+
+        temp_files = []
+        try:
+            actual_prompt_path = prompt_wav_path
+            actual_ref_path = reference_wav_path
+
+            if denoise and self.denoiser is not None:
+                if prompt_wav_path is not None:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                        temp_files.append(tmp.name)
+                    self.denoiser.enhance(prompt_wav_path, output_path=temp_files[-1])
+                    actual_prompt_path = temp_files[-1]
+                if reference_wav_path is not None:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                        temp_files.append(tmp.name)
+                    self.denoiser.enhance(reference_wav_path, output_path=temp_files[-1])
+                    actual_ref_path = temp_files[-1]
+
+            if is_v2:
+                return self.tts_model.build_prompt_cache(
+                    prompt_text=prompt_text,
+                    prompt_wav_path=actual_prompt_path,
+                    reference_wav_path=actual_ref_path,
+                )
+            return self.tts_model.build_prompt_cache(
+                prompt_text=prompt_text,
+                prompt_wav_path=actual_prompt_path,
+            )
+        finally:
+            for tmp_path in temp_files:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+    def generate_with_prompt_cache(
+        self,
+        text: str,
+        prompt_cache=None,
+        cfg_value: float = 2.0,
+        inference_timesteps: int = 10,
+        min_len: int = 2,
+        max_len: int = 4096,
+        normalize: bool = False,
+        retry_badcase: bool = True,
+        retry_badcase_max_times: int = 3,
+        retry_badcase_ratio_threshold: float = 6.0,
+        seed: Optional[int] = None,
+    ) -> np.ndarray:
+        """Generate speech using a cache from prepare_prompt_cache()."""
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("target text must be a non-empty string")
+
+        text = text.replace("\n", " ")
+        text = re.sub(r"\s+", " ", text)
+
+        if normalize:
+            if self.text_normalizer is None:
+                from .utils.text_normalize import TextNormalizer
+
+                self.text_normalizer = TextNormalizer()
+            text = self.text_normalizer.normalize(text)
+
+        generate_result = self.tts_model._generate_with_prompt_cache(
+            target_text=text,
+            prompt_cache=prompt_cache,
+            min_len=min_len,
+            max_len=max_len,
+            inference_timesteps=inference_timesteps,
+            cfg_value=cfg_value,
+            retry_badcase=retry_badcase,
+            retry_badcase_max_times=retry_badcase_max_times,
+            retry_badcase_ratio_threshold=retry_badcase_ratio_threshold,
+            streaming=False,
+            seed=seed,
+        )
+        wav, _, _ = next_and_close(generate_result)
+        return wav.squeeze(0).cpu().numpy()
+
     def _generate(
         self,
         text: str,
