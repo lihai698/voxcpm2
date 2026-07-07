@@ -949,6 +949,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                         batch_output = gr.DownloadButton(label="下载全部 ZIP", visible=True, size="sm", scale=1)
                 batch_audio_map = gr.State({})
                 batch_job_id = gr.State("")
+                manual_audio_selection = gr.State(False)
                 batch_job_timer = gr.Timer(2.0, active=True)
                 generation_status = gr.Textbox(
                     label="生成状态",
@@ -1166,9 +1167,10 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(visible=False),
                     gr.update(visible=False),
                     gr.update(choices=[], value=None, visible=False),
-                    gr.update(value="生成中...", interactive=False),
+                    gr.update(value=f"生成中 0/{count}", interactive=False),
                     {},
                     "",
+                    False,
                 )
             return (
                 gr.update(value=None),
@@ -1180,6 +1182,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 gr.update(value="生成中...", interactive=False),
                 {},
                 "",
+                False,
             )
 
         def _batch_generate(
@@ -1316,6 +1319,9 @@ def create_demo_interface(demo: VoxCPMDemo):
                                 job["partial_audio_map"] = partial_audio_map
                                 job["partial_choices"] = partial_choices
                                 job["partial_first_audio"] = partial_audio_map.get(partial_first) if partial_first else None
+                                job["partial_latest_audio"] = str(out_path)
+                                job["partial_latest_choice"] = out_name
+                                job["completed"] = generated_count
                                 job["message"] = f"后台生成中：已完成 {generated_count}/{len(txt_files)} 个 TXT。"
                 except Exception as e:
                     logger.error(f"Batch gen failed for {fpath}: {e}")
@@ -1390,12 +1396,14 @@ def create_demo_interface(demo: VoxCPMDemo):
                 BATCH_JOBS[job_id] = {
                     "status": "queued",
                     "message": f"已加入后台队列：{txt_count} 个 TXT。页面可继续停留，完成后会自动更新结果。",
+                    "total": txt_count,
+                    "completed": 0,
                     "created_at": time.time(),
                 }
             BATCH_JOB_EXECUTOR.submit(_run_batch_job, job_id, batch_args)
             return job_id
 
-        def _poll_batch_job(job_id):
+        def _poll_batch_job(job_id, manual_selected):
             if not job_id:
                 return (
                     gr.update(),
@@ -1406,25 +1414,30 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(),
                     gr.update(),
                     "",
+                    manual_selected,
                 )
             with BATCH_JOBS_LOCK:
                 job = dict(BATCH_JOBS.get(job_id) or {})
             status = job.get("status")
+            total = int(job.get("total") or 0)
+            completed = int(job.get("completed") or 0)
             if status in {"queued", "running"}:
                 elapsed = time.time() - float(job.get("created_at", time.time()))
                 partial_audio_map = job.get("partial_audio_map") or {}
                 partial_choices = job.get("partial_choices") or list(partial_audio_map.keys())
-                partial_first = partial_choices[0] if partial_choices else None
+                partial_latest = job.get("partial_latest_choice") or (partial_choices[-1] if partial_choices else None)
+                button_text = f"生成中 {completed}/{total}" if total else "生成中..."
                 if partial_audio_map:
                     return (
-                        gr.update(value=job.get("partial_first_audio")),
+                        gr.update() if manual_selected else gr.update(value=job.get("partial_latest_audio")),
                         gr.update(visible=False),
                         gr.update(value=f"{job.get('message', '后台生成中...')}\n已用时：{elapsed:.1f} 秒\n已生成的音频可以先试听。", visible=True),
                         gr.update(visible=True),
-                        gr.update(choices=partial_choices, value=partial_first, visible=True),
+                        gr.update(choices=partial_choices, visible=True) if manual_selected else gr.update(choices=partial_choices, value=partial_latest, visible=True),
                         partial_audio_map,
-                        gr.update(value="开始生成", interactive=True),
+                        gr.update(value=button_text, interactive=True),
                         job_id,
+                        manual_selected,
                     )
                 return (
                     gr.update(),
@@ -1433,22 +1446,27 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(visible=False),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(),
-                    gr.update(value="开始生成", interactive=True),
+                    gr.update(value=button_text, interactive=True),
                     job_id,
+                    manual_selected,
                 )
             if status == "done":
                 batch_file, status_update, batch_result_visible, preview_choices, first_audio, audio_map = job.get("result")
                 with BATCH_JOBS_LOCK:
                     BATCH_JOBS.pop(job_id, None)
+                final_choices = list((audio_map or {}).keys())
+                final_latest = final_choices[-1] if final_choices else None
+                final_audio = (audio_map or {}).get(final_latest) if final_latest else first_audio
                 return (
-                    first_audio,
+                    gr.update() if manual_selected else gr.update(value=final_audio),
                     batch_file,
                     status_update,
                     batch_result_visible,
-                    preview_choices,
+                    gr.update(choices=final_choices, visible=True) if manual_selected else gr.update(choices=final_choices, value=final_latest, visible=True),
                     audio_map,
                     gr.update(value="开始生成", interactive=True),
                     "",
+                    manual_selected,
                 )
             if status == "failed":
                 with BATCH_JOBS_LOCK:
@@ -1462,6 +1480,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     {},
                     gr.update(value="开始生成", interactive=True),
                     "",
+                    manual_selected,
                 )
             return (
                 gr.update(),
@@ -1472,6 +1491,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 gr.update(),
                 gr.update(),
                 "",
+                manual_selected,
             )
 
         def _generate_or_batch(
@@ -1512,6 +1532,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                         gr.update(value="开始生成", interactive=True),
                         {},
                         job_id,
+                        False,
                     )
 
                 audio, last_successful_seed = _generate(
@@ -1536,6 +1557,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(value="开始生成", interactive=True),
                     {},
                     "",
+                    False,
                 )
             except Exception as exc:
                 logger.exception("Generation failed.")
@@ -1549,6 +1571,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(value="开始生成", interactive=True),
                     {},
                     "",
+                    False,
                 )
 
         txt_upload.change(
@@ -1583,7 +1606,7 @@ def create_demo_interface(demo: VoxCPMDemo):
         run_btn.click(
             fn=_prepare_generation_feedback,
             inputs=[random_seed, seed_value, txt_upload],
-            outputs=[audio_output, seed_value, generation_status, batch_output, batch_result_group, batch_preview_dropdown, run_btn, batch_audio_map, batch_job_id],
+            outputs=[audio_output, seed_value, generation_status, batch_output, batch_result_group, batch_preview_dropdown, run_btn, batch_audio_map, batch_job_id, manual_audio_selection],
             show_progress=False,
         ).then(
             fn=_generate_or_batch,
@@ -1595,22 +1618,22 @@ def create_demo_interface(demo: VoxCPMDemo):
                 cfg_value, DoNormalizeText, DoDenoisePromptAudio,
                 dit_steps, seed_value, txt_upload,
             ],
-            outputs=[audio_output, seed_value, batch_output, generation_status, batch_result_group, batch_preview_dropdown, run_btn, batch_audio_map, batch_job_id],
+            outputs=[audio_output, seed_value, batch_output, generation_status, batch_result_group, batch_preview_dropdown, run_btn, batch_audio_map, batch_job_id, manual_audio_selection],
             show_progress=True,
             api_name="generate",
         )
 
         batch_job_timer.tick(
             fn=_poll_batch_job,
-            inputs=[batch_job_id],
-            outputs=[audio_output, batch_output, generation_status, batch_result_group, batch_preview_dropdown, batch_audio_map, run_btn, batch_job_id],
+            inputs=[batch_job_id, manual_audio_selection],
+            outputs=[audio_output, batch_output, generation_status, batch_result_group, batch_preview_dropdown, batch_audio_map, run_btn, batch_job_id, manual_audio_selection],
             show_progress=False,
         )
 
-        batch_preview_dropdown.change(
-            fn=lambda choice, audio_map: gr.update(value=(audio_map or {}).get(choice)),
+        batch_preview_dropdown.input(
+            fn=lambda choice, audio_map: (gr.update(value=(audio_map or {}).get(choice)), True),
             inputs=[batch_preview_dropdown, batch_audio_map],
-            outputs=[audio_output],
+            outputs=[audio_output, manual_audio_selection],
         )
 
         # ─── 保存音色 [克隆] ───
