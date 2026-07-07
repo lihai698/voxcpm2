@@ -4,6 +4,9 @@ import sys
 import logging
 import random
 import time
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import gradio as gr
 import torch
@@ -22,6 +25,10 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+
+BATCH_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voxcpm-batch")
+BATCH_JOBS: dict[str, dict] = {}
+BATCH_JOBS_LOCK = threading.Lock()
 
 MAX_BATCH_CHUNK_CHARS = 220
 MAX_BATCH_TOTAL_CHARS = 8000
@@ -880,6 +887,8 @@ def create_demo_interface(demo: VoxCPMDemo):
                         )
                         batch_output = gr.DownloadButton(label="下载全部 ZIP", visible=True, size="sm", scale=1)
                 batch_audio_map = gr.State({})
+                batch_job_id = gr.State("")
+                batch_job_timer = gr.Timer(2.0, active=True)
                 generation_status = gr.Textbox(
                     label="生成状态",
                     value="",
@@ -1097,6 +1106,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value="生成中...", interactive=False),
                     {},
+                    "",
                 )
             return (
                 gr.update(value=None),
@@ -1107,6 +1117,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 gr.update(choices=[], value=None, visible=False),
                 gr.update(value="生成中...", interactive=False),
                 {},
+                "",
             )
 
         def _batch_generate(
@@ -1272,6 +1283,107 @@ def create_demo_interface(demo: VoxCPMDemo):
                 audio_map,
             )
 
+        def _noop_progress(*args, **kwargs):
+            return None
+
+        def _run_batch_job(job_id, batch_args):
+            with BATCH_JOBS_LOCK:
+                job = BATCH_JOBS.get(job_id)
+                if job:
+                    job["status"] = "running"
+                    job["message"] = "后台生成中..."
+            try:
+                result = _batch_generate(*batch_args, progress=_noop_progress)
+                with BATCH_JOBS_LOCK:
+                    job = BATCH_JOBS.get(job_id)
+                    if job:
+                        job["status"] = "done"
+                        job["result"] = result
+                        job["message"] = "后台生成完成。"
+            except Exception as exc:
+                logger.exception("Background batch job failed.")
+                with BATCH_JOBS_LOCK:
+                    job = BATCH_JOBS.get(job_id)
+                    if job:
+                        job["status"] = "failed"
+                        job["message"] = f"后台生成失败：{friendly_runtime_error(exc)}"
+
+        def _start_batch_job(batch_args, txt_count):
+            job_id = uuid.uuid4().hex
+            with BATCH_JOBS_LOCK:
+                BATCH_JOBS[job_id] = {
+                    "status": "queued",
+                    "message": f"已加入后台队列：{txt_count} 个 TXT。页面可继续停留，完成后会自动更新结果。",
+                    "created_at": time.time(),
+                }
+            BATCH_JOB_EXECUTOR.submit(_run_batch_job, job_id, batch_args)
+            return job_id
+
+        def _poll_batch_job(job_id):
+            if not job_id:
+                return (
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    "",
+                )
+            with BATCH_JOBS_LOCK:
+                job = dict(BATCH_JOBS.get(job_id) or {})
+            status = job.get("status")
+            if status in {"queued", "running"}:
+                elapsed = time.time() - float(job.get("created_at", time.time()))
+                return (
+                    gr.update(),
+                    gr.update(),
+                    gr.update(value=f"{job.get('message', '后台生成中...')}\n已用时：{elapsed:.1f} 秒", visible=True),
+                    gr.update(visible=False),
+                    gr.update(choices=[], value=None, visible=False),
+                    gr.update(),
+                    gr.update(value="开始生成", interactive=True),
+                    job_id,
+                )
+            if status == "done":
+                batch_file, status_update, batch_result_visible, preview_choices, first_audio, audio_map = job.get("result")
+                with BATCH_JOBS_LOCK:
+                    BATCH_JOBS.pop(job_id, None)
+                return (
+                    first_audio,
+                    batch_file,
+                    status_update,
+                    batch_result_visible,
+                    preview_choices,
+                    audio_map,
+                    gr.update(value="开始生成", interactive=True),
+                    "",
+                )
+            if status == "failed":
+                with BATCH_JOBS_LOCK:
+                    BATCH_JOBS.pop(job_id, None)
+                return (
+                    gr.update(value=None),
+                    gr.update(visible=False),
+                    gr.update(value=job.get("message", "后台生成失败。"), visible=True),
+                    gr.update(visible=False),
+                    gr.update(choices=[], value=None, visible=False),
+                    {},
+                    gr.update(value="开始生成", interactive=True),
+                    "",
+                )
+            return (
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                "",
+            )
+
         def _generate_or_batch(
             text_value,
             control_instruction_val,
@@ -1287,7 +1399,7 @@ def create_demo_interface(demo: VoxCPMDemo):
         ):
             try:
                 if txt_files:
-                    batch_file, status, batch_result_visible, preview_choices, first_audio, audio_map = _batch_generate(
+                    batch_args = (
                         txt_files,
                         control_instruction_val,
                         ref_wav,
@@ -1299,15 +1411,17 @@ def create_demo_interface(demo: VoxCPMDemo):
                         dit_steps_val,
                         seed_val,
                     )
+                    job_id = _start_batch_job(batch_args, len(txt_files or []))
                     return (
-                        first_audio,
+                        gr.update(value=None),
                         seed_val,
-                        batch_file,
-                        status,
-                        batch_result_visible,
-                        preview_choices,
+                        gr.update(visible=False),
+                        gr.update(value=f"已进入后台生成队列：{len(txt_files or [])} 个 TXT。完成后会自动显示 ZIP 和试听下拉框。", visible=True),
+                        gr.update(visible=False),
+                        gr.update(choices=[], value=None, visible=False),
                         gr.update(value="开始生成", interactive=True),
-                        audio_map,
+                        {},
+                        job_id,
                     )
 
                 audio, last_successful_seed = _generate(
@@ -1331,6 +1445,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value="开始生成", interactive=True),
                     {},
+                    "",
                 )
             except Exception as exc:
                 logger.exception("Generation failed.")
@@ -1343,6 +1458,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value="开始生成", interactive=True),
                     {},
+                    "",
                 )
 
         txt_upload.change(
@@ -1377,7 +1493,7 @@ def create_demo_interface(demo: VoxCPMDemo):
         run_btn.click(
             fn=_prepare_generation_feedback,
             inputs=[random_seed, seed_value, txt_upload],
-            outputs=[audio_output, seed_value, generation_status, batch_output, batch_result_group, batch_preview_dropdown, run_btn, batch_audio_map],
+            outputs=[audio_output, seed_value, generation_status, batch_output, batch_result_group, batch_preview_dropdown, run_btn, batch_audio_map, batch_job_id],
             show_progress=False,
         ).then(
             fn=_generate_or_batch,
@@ -1389,9 +1505,16 @@ def create_demo_interface(demo: VoxCPMDemo):
                 cfg_value, DoNormalizeText, DoDenoisePromptAudio,
                 dit_steps, seed_value, txt_upload,
             ],
-            outputs=[audio_output, seed_value, batch_output, generation_status, batch_result_group, batch_preview_dropdown, run_btn, batch_audio_map],
+            outputs=[audio_output, seed_value, batch_output, generation_status, batch_result_group, batch_preview_dropdown, run_btn, batch_audio_map, batch_job_id],
             show_progress=True,
             api_name="generate",
+        )
+
+        batch_job_timer.tick(
+            fn=_poll_batch_job,
+            inputs=[batch_job_id],
+            outputs=[audio_output, batch_output, generation_status, batch_result_group, batch_preview_dropdown, batch_audio_map, run_btn, batch_job_id],
+            show_progress=False,
         )
 
         batch_preview_dropdown.change(
