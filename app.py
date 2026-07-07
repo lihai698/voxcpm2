@@ -6,6 +6,7 @@ import random
 import time
 import threading
 import uuid
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import gradio as gr
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 BATCH_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voxcpm-batch")
 BATCH_JOBS: dict[str, dict] = {}
 BATCH_JOBS_LOCK = threading.Lock()
-MODEL_RUNTIME_LOCK = threading.Lock()
+MODEL_RUNTIME_LOCK = threading.RLock()
 
 MAX_BATCH_CHUNK_CHARS = 220
 MAX_BATCH_TOTAL_CHARS = 8000
@@ -382,6 +383,8 @@ VOICES_DIR = Path(__file__).parent / "saved_voices"
 VOICES_DIR.mkdir(exist_ok=True)
 VOICE_CACHE_DIR = VOICES_DIR / "_cache"
 VOICE_CACHE_DIR.mkdir(exist_ok=True)
+PREPROCESSED_AUDIO_CACHE_DIR = VOICES_DIR / "_preprocessed"
+PREPROCESSED_AUDIO_CACHE_DIR.mkdir(exist_ok=True)
 VOICE_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
 
 
@@ -407,6 +410,35 @@ def _safe_voice_filename(name: str) -> str:
 
 def _voice_cache_path(name: str) -> Path:
     return VOICE_CACHE_DIR / f"{_safe_voice_filename(name)}.prompt_cache.pt"
+
+
+def _preprocessed_audio_cache_path(audio_path: str) -> Path:
+    path = Path(audio_path)
+    stat = path.stat()
+    digest = hashlib.sha1(
+        f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8", errors="ignore")
+    ).hexdigest()[:20]
+    return PREPROCESSED_AUDIO_CACHE_DIR / f"{path.stem}.{digest}.denoised.wav"
+
+
+def _get_or_create_denoised_audio(audio_path: Optional[str], demo: "VoxCPMDemo") -> Optional[str]:
+    if not audio_path:
+        return audio_path
+    source = Path(audio_path)
+    if not source.exists():
+        return audio_path
+    cache_path = _preprocessed_audio_cache_path(str(source))
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        logger.info("Using cached denoised audio: %s", cache_path)
+        return str(cache_path)
+
+    with MODEL_RUNTIME_LOCK:
+        model = demo.get_or_load_voxcpm()
+        if model.denoiser is None:
+            return audio_path
+        logger.info("Creating denoised audio cache: %s", cache_path)
+        model.denoiser.enhance(str(source), output_path=str(cache_path))
+    return str(cache_path)
 
 
 def _load_prompt_cache_file(cache_path: str | Path):
@@ -665,6 +697,9 @@ class VoxCPMDemo:
 
         audio_path = reference_wav_path_input if reference_wav_path_input else None
         prompt_text_clean = (prompt_text or "").strip() or None
+        if denoise and audio_path:
+            audio_path = _get_or_create_denoised_audio(audio_path, self)
+            denoise = False
 
         if audio_path and prompt_text_clean:
             logger.info(f"[Voice Cloning] prompt_wav + prompt_text + reference_wav")
@@ -1164,19 +1199,20 @@ def create_demo_interface(demo: VoxCPMDemo):
             if ref_wav:
                 progress(0, desc="正在准备参考音频缓存")
                 try:
-                    persistent_cache_path = _find_voice_cache_for_audio(ref_wav, actual_prompt)
+                    cache_ref_wav = _get_or_create_denoised_audio(ref_wav, demo) if denoise else ref_wav
+                    persistent_cache_path = None if denoise else _find_voice_cache_for_audio(ref_wav, actual_prompt)
                     if persistent_cache_path:
                         prompt_cache = _load_prompt_cache_file(persistent_cache_path)
                         logger.info("Loaded persistent voice prompt cache: %s", persistent_cache_path)
                     if prompt_cache is None:
                         with MODEL_RUNTIME_LOCK:
                             prompt_cache = demo.get_or_load_voxcpm().prepare_prompt_cache(
-                                prompt_wav_path=ref_wav if actual_prompt else None,
+                                prompt_wav_path=cache_ref_wav if actual_prompt else None,
                                 prompt_text=actual_prompt or None,
-                                reference_wav_path=ref_wav,
-                                denoise=denoise,
+                                reference_wav_path=cache_ref_wav,
+                                denoise=False,
                             )
-                        if not actual_prompt:
+                        if not actual_prompt and not denoise:
                             voice_entry = _find_voice_entry_for_audio(ref_wav, actual_prompt)
                             if voice_entry and voice_entry.get("name"):
                                 cache_path = _voice_cache_path(str(voice_entry["name"]))
