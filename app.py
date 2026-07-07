@@ -337,13 +337,17 @@ _CUSTOM_CSS = """
 }
 
 /* TXT 批量上传文件列表限高，最多显示3个，超出滚动 */
-.txt-upload-limited .file-preview {
-    max-height: 108px;
+.txt-upload-limited .file-preview,
+#txt-batch-upload .file-preview,
+#txt-batch-upload [data-testid="file-preview"],
+#txt-batch-upload ul,
+#txt-batch-upload .wrap {
+    max-height: 118px !important;
     overflow-y: auto;
 }
 .txt-upload-limited ul {
-    max-height: 108px;
-    overflow-y: auto;
+    max-height: 118px !important;
+    overflow-y: auto !important;
 }
 .settings-panel {
     border: 0;
@@ -902,6 +906,8 @@ def create_demo_interface(demo: VoxCPMDemo):
                     label="📄 上传 TXT 批量生成（多选，每个文件生成一条音频）",
                     file_types=[".txt"],
                     file_count="multiple",
+                    height=136,
+                    elem_id="txt-batch-upload",
                     elem_classes=["txt-upload-limited"],
                 )
                 with gr.Group(visible=False) as txt_preview_group:
