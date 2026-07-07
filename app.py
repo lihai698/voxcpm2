@@ -920,7 +920,8 @@ def create_demo_interface(demo: VoxCPMDemo):
                 with gr.Group(visible=False) as batch_result_group:
                     with gr.Row(elem_classes=["compact-result-row"]):
                         batch_preview_dropdown = gr.Dropdown(
-                            label="🎧 试听批量结果",
+                            label="",
+                            show_label=False,
                             choices=[],
                             value=None,
                             visible=True,
