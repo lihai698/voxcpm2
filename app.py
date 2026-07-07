@@ -346,10 +346,12 @@ def friendly_runtime_error(exc: Exception) -> RuntimeError:
 
 
 class VoxCPMDemo:
-    def __init__(self, model_id: str = "openbmb/VoxCPM2", device: str = "auto") -> None:
+    def __init__(self, model_id: str = "openbmb/VoxCPM2", device: str = "auto", optimize: bool = False) -> None:
         self.device = resolve_runtime_device(device, "cuda")
         logger.info(f"Running VoxCPM on device: {self.device}")
-        self.optimize = self.device.startswith("cuda")
+        self.optimize = bool(optimize and self.device.startswith("cuda"))
+        if not self.optimize:
+            logger.info("Model compile optimization is disabled for faster interactive startup.")
 
         self.asr_model_id = "iic/SenseVoiceSmall"
         self.asr_device = "cuda:0" if self.device.startswith("cuda") else "cpu"
@@ -626,7 +628,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                         scale=2,
                     )
                     batch_output = gr.File(label="📦 ZIP 下载", visible=False, scale=1)
-                batch_preview_audio = gr.Audio(label="当前试听音频", visible=False)
 
                 # 保存音色
                 with gr.Accordion("保存音色", open=False):
@@ -787,7 +788,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(visible=False),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(choices=[], value=None, visible=False),
-                    gr.update(value=None, visible=False),
                     gr.update(value="", visible=False),
                 )
 
@@ -802,7 +802,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                 gr.update(visible=True),
                 gr.update(choices=choices, value=first_value, label=f"选择预览 TXT（共 {len(txt_files)} 个）"),
                 gr.update(choices=[], value=None, visible=False),
-                gr.update(value=None, visible=False),
                 gr.update(value="", visible=False),
             )
 
@@ -827,19 +826,19 @@ def create_demo_interface(demo: VoxCPMDemo):
             if count > 0:
                 status = f"正在生成 {count} 个 TXT 对应的音频，请稍等。生成完成后会提供 ZIP 下载和逐条试听。"
                 return (
+                    gr.update(value=None),
                     seed,
                     gr.update(value=status, visible=True),
                     gr.update(visible=False),
                     gr.update(choices=[], value=None, visible=False),
-                    gr.update(value=None, visible=False),
                     gr.update(value="生成中...", interactive=False),
                 )
             return (
+                gr.update(value=None),
                 seed,
                 gr.update(value="正在生成单条音频，请稍等。", visible=True),
                 gr.update(visible=False),
                 gr.update(choices=[], value=None, visible=False),
-                gr.update(value=None, visible=False),
                 gr.update(value="生成中...", interactive=False),
             )
 
@@ -860,7 +859,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(visible=False),
                     gr.update(value="请先上传 TXT 文件。", visible=True),
                     gr.update(choices=[], value=None, visible=False),
-                    gr.update(value=None, visible=False),
+                    gr.update(value=None),
                 )
             import tempfile, zipfile
             out_dir = Path(tempfile.mkdtemp(prefix="voxcpm_batch_"))
@@ -917,7 +916,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(visible=False),
                     gr.update(value=status, visible=True),
                     gr.update(choices=[], value=None, visible=False),
-                    gr.update(value=None, visible=False),
+                    gr.update(value=None),
                 )
 
             zip_path = out_dir.parent / f"{out_dir.name}.zip"
@@ -937,7 +936,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 gr.update(value=str(zip_path), visible=True),
                 gr.update(value="\n".join(status_lines), visible=True),
                 gr.update(choices=choices, value=first_audio, visible=True),
-                gr.update(value=first_audio, visible=True),
+                gr.update(value=first_audio),
             )
 
         def _generate_or_batch(
@@ -955,7 +954,7 @@ def create_demo_interface(demo: VoxCPMDemo):
         ):
             try:
                 if txt_files:
-                    batch_file, status, preview_choices, preview_audio = _batch_generate(
+                    batch_file, status, preview_choices, first_audio = _batch_generate(
                         txt_files,
                         control_instruction_val,
                         ref_wav,
@@ -968,12 +967,11 @@ def create_demo_interface(demo: VoxCPMDemo):
                         seed_val,
                     )
                     return (
-                        gr.update(value=None),
+                        first_audio,
                         seed_val,
                         batch_file,
                         status,
                         preview_choices,
-                        preview_audio,
                         gr.update(value="开始生成", interactive=True),
                     )
 
@@ -995,7 +993,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(visible=False),
                     gr.update(value="完成：单条音频已生成。", visible=True),
                     gr.update(choices=[], value=None, visible=False),
-                    gr.update(value=None, visible=False),
                     gr.update(value="开始生成", interactive=True),
                 )
             except Exception as exc:
@@ -1006,7 +1003,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(visible=False),
                     gr.update(value=f"生成失败：{exc}", visible=True),
                     gr.update(choices=[], value=None, visible=False),
-                    gr.update(value=None, visible=False),
                     gr.update(value="开始生成", interactive=True),
                 )
 
@@ -1019,7 +1015,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                 txt_preview_group,
                 txt_preview_dropdown,
                 batch_preview_dropdown,
-                batch_preview_audio,
                 generation_status,
             ],
             show_progress=False,
@@ -1041,7 +1036,7 @@ def create_demo_interface(demo: VoxCPMDemo):
         run_btn.click(
             fn=_prepare_generation_feedback,
             inputs=[random_seed, seed_value, txt_upload],
-            outputs=[seed_value, generation_status, batch_output, batch_preview_dropdown, batch_preview_audio, run_btn],
+            outputs=[audio_output, seed_value, generation_status, batch_output, batch_preview_dropdown, run_btn],
             show_progress=False,
         ).then(
             fn=_generate_or_batch,
@@ -1053,15 +1048,15 @@ def create_demo_interface(demo: VoxCPMDemo):
                 cfg_value, DoNormalizeText, DoDenoisePromptAudio,
                 dit_steps, seed_value, txt_upload,
             ],
-            outputs=[audio_output, seed_value, batch_output, generation_status, batch_preview_dropdown, batch_preview_audio, run_btn],
+            outputs=[audio_output, seed_value, batch_output, generation_status, batch_preview_dropdown, run_btn],
             show_progress=True,
             api_name="generate",
         )
 
         batch_preview_dropdown.change(
-            fn=lambda audio_path: gr.update(value=audio_path, visible=bool(audio_path)),
+            fn=lambda audio_path: gr.update(value=audio_path),
             inputs=[batch_preview_dropdown],
-            outputs=[batch_preview_audio],
+            outputs=[audio_output],
         )
 
         # ─── 保存音色 [克隆] ───
@@ -1162,8 +1157,9 @@ def run_demo(
     show_error: bool = True,
     model_id: str = "openbmb/VoxCPM2",
     device: str = "auto",
+    optimize: bool = False,
 ):
-    demo = VoxCPMDemo(model_id=model_id, device=device)
+    demo = VoxCPMDemo(model_id=model_id, device=device, optimize=optimize)
     interface = create_demo_interface(demo)
     interface.queue(max_size=10, default_concurrency_limit=1).launch(
         server_name=server_name,
@@ -1199,10 +1195,16 @@ if __name__ == "__main__":
         default="auto",
         help="Runtime device: auto, cpu, mps, cuda, or cuda:N (default: auto)",
     )
+    parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="Enable torch compile optimization. This can improve repeated inference speed but makes first use slower.",
+    )
     args = parser.parse_args()
     run_demo(
         model_id=args.model_id,
         server_name=args.host,
         server_port=args.port,
         device=args.device,
+        optimize=args.optimize,
     )
