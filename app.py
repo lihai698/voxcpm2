@@ -338,6 +338,10 @@ _CUSTOM_CSS = """
 }
 .compact-result-row {
     align-items: end;
+    margin: 4px 0 8px 0;
+}
+.compact-result-row .wrap {
+    min-height: 0 !important;
 }
 """
 
@@ -725,13 +729,6 @@ def create_demo_interface(demo: VoxCPMDemo):
 
             with gr.Column():
                 audio_output = gr.Audio(label=I18N("generated_audio_label"))
-                generation_status = gr.Textbox(
-                    label="生成状态",
-                    value="",
-                    visible=False,
-                    interactive=False,
-                    lines=5,
-                )
 
                 # 批量生成结果
                 with gr.Row(elem_classes=["compact-result-row"]):
@@ -745,6 +742,13 @@ def create_demo_interface(demo: VoxCPMDemo):
                     )
                     batch_output = gr.DownloadButton(label="下载全部 ZIP", visible=False, size="sm", scale=1)
                 batch_audio_map = gr.State({})
+                generation_status = gr.Textbox(
+                    label="生成状态",
+                    value="",
+                    visible=False,
+                    interactive=False,
+                    lines=5,
+                )
 
                 # 保存音色
                 with gr.Accordion("保存音色", open=False):
