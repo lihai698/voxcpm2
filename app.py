@@ -3,6 +3,7 @@ import re
 import sys
 import logging
 import random
+import time
 import numpy as np
 import gradio as gr
 from typing import Optional, Tuple
@@ -20,6 +21,49 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+
+MAX_BATCH_CHUNK_CHARS = 220
+MAX_BATCH_TOTAL_CHARS = 8000
+BATCH_CHUNK_PAUSE_SECONDS = 0.18
+
+
+def _split_text_for_tts(text: str, max_chars: int = MAX_BATCH_CHUNK_CHARS) -> list[str]:
+    """Split long TXT content into model-friendly chunks while keeping sentence order."""
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    if not clean:
+        return []
+
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[。！？!?；;])\s*", clean)
+        if part.strip()
+    ]
+    if not sentences:
+        sentences = [clean]
+
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        if len(sentence) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            for start in range(0, len(sentence), max_chars):
+                piece = sentence[start : start + max_chars].strip()
+                if piece:
+                    chunks.append(piece)
+            continue
+
+        candidate = f"{current}{sentence}" if current else sentence
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+    return chunks
 
 # ---------- Inline i18n (en + zh-CN only) ----------
 
@@ -409,6 +453,7 @@ class VoxCPMDemo:
         denoise: bool,
         inference_timesteps: int = 10,
         seed: Optional[int] = None,
+        retry_badcase: bool = True,
     ) -> dict:
         generate_kwargs = dict(
             text=final_text,
@@ -418,6 +463,7 @@ class VoxCPMDemo:
             normalize=do_normalize,
             denoise=denoise,
             seed=seed,
+            retry_badcase=retry_badcase,
         )
         if prompt_text_clean and audio_path:
             generate_kwargs["prompt_wav_path"] = audio_path
@@ -435,6 +481,7 @@ class VoxCPMDemo:
         denoise: bool = True,
         inference_timesteps: int = 10,
         seed: Optional[int] = None,
+        retry_badcase: bool = True,
     ) -> Tuple[int, np.ndarray, Optional[int]]:
         current_model = self.get_or_load_voxcpm()
 
@@ -458,7 +505,14 @@ class VoxCPMDemo:
         else:
             logger.info(f"[Voice Design] control: {control[:50] if control else 'None'}...")
 
-        logger.info(f"Generating audio for text: '{final_text[:80]}...'")
+        start_time = time.perf_counter()
+        logger.info(
+            "Generating audio: chars=%s, steps=%s, retry_badcase=%s, text='%s...'",
+            len(text),
+            inference_timesteps,
+            retry_badcase,
+            final_text[:80],
+        )
         generate_kwargs = self._build_generate_kwargs(
             final_text=final_text,
             audio_path=audio_path,
@@ -468,12 +522,14 @@ class VoxCPMDemo:
             denoise=denoise,
             inference_timesteps=inference_timesteps,
             seed=seed,
+            retry_badcase=retry_badcase,
         )
         try:
             wav = current_model.generate(**generate_kwargs)
         except Exception as exc:
             logger.exception("VoxCPM generation failed.")
             raise friendly_runtime_error(exc) from exc
+        logger.info("Generation finished in %.1fs for %s chars.", time.perf_counter() - start_time, len(text))
         last_successful_seed = getattr(current_model.tts_model, "last_successful_seed", seed)
         return (current_model.tts_model.sample_rate, wav, last_successful_seed)
 
@@ -873,6 +929,7 @@ def create_demo_interface(demo: VoxCPMDemo):
             success_preview = []
             hidden_success_count = 0
             generated_count = 0
+            batch_start_time = time.perf_counter()
             for index, f in enumerate(txt_files, 1):
                 fpath = f.name if hasattr(f, 'name') else f
                 try:
@@ -885,21 +942,53 @@ def create_demo_interface(demo: VoxCPMDemo):
                 if not content:
                     status_lines.append(f"跳过空文件：{Path(fpath).name}")
                     continue
+                if char_count > MAX_BATCH_TOTAL_CHARS:
+                    status_lines.append(
+                        f"TXT too long: {Path(fpath).name} ({char_count} chars). Split it into smaller TXT files first."
+                    )
+                    continue
+                chunks = _split_text_for_tts(content)
+                if not chunks:
+                    status_lines.append(f"Empty TXT: {Path(fpath).name}")
+                    continue
                 seed = _prepare_seed(True, seed_val)
                 actual_prompt = prompt_text_val.strip() if use_prompt_text else ""
                 actual_ctrl = "" if use_prompt_text else control_instruction_val
                 try:
-                    sr, wav_np, _ = demo.generate_tts_audio(
-                        text_input=content,
-                        control_instruction=actual_ctrl,
-                        reference_wav_path_input=ref_wav,
-                        prompt_text=actual_prompt,
-                        cfg_value_input=cfg_val,
-                        do_normalize=do_normalize,
-                        denoise=denoise,
-                        inference_timesteps=int(dit_steps_val),
-                        seed=seed,
+                    logger.info(
+                        "Batch item %s/%s: %s, chars=%s, chunks=%s",
+                        index,
+                        len(txt_files),
+                        Path(fpath).name,
+                        char_count,
+                        len(chunks),
                     )
+                    chunk_wavs = []
+                    sr = None
+                    for chunk_index, chunk in enumerate(chunks, 1):
+                        chunk_seed = seed + chunk_index - 1 if seed is not None else None
+                        chunk_sr, chunk_wav, _ = demo.generate_tts_audio(
+                            text_input=chunk,
+                            control_instruction=actual_ctrl,
+                            reference_wav_path_input=ref_wav,
+                            prompt_text=actual_prompt,
+                            cfg_value_input=cfg_val,
+                            do_normalize=do_normalize,
+                            denoise=denoise,
+                            inference_timesteps=int(dit_steps_val),
+                            seed=chunk_seed,
+                            retry_badcase=True,
+                        )
+                        sr = chunk_sr
+                        chunk_wavs.append(chunk_wav)
+
+                    pause = np.zeros(int(sr * BATCH_CHUNK_PAUSE_SECONDS), dtype=np.float32)
+                    wav_parts = []
+                    for chunk_index, chunk_wav in enumerate(chunk_wavs):
+                        wav_parts.append(chunk_wav)
+                        if chunk_index < len(chunk_wavs) - 1:
+                            wav_parts.append(pause)
+                    wav_np = np.concatenate(wav_parts).astype(np.float32)
                     import soundfile as sf
                     safe_stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", Path(fpath).stem).strip() or "txt"
                     out_name = f"{index:03d}_{safe_stem}.wav"
@@ -935,6 +1024,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 summary_lines.extend(success_preview)
             if hidden_success_count:
                 summary_lines.append(f"... 另外 {hidden_success_count} 条成功结果已收起，可在试听下拉框中选择。")
+            summary_lines.append(f"Time used: {time.perf_counter() - batch_start_time:.1f}s")
             status_lines = summary_lines + status_lines
             audio_map = {wav_file.name: str(wav_file) for wav_file in generated_files}
             choices = list(audio_map.keys())
