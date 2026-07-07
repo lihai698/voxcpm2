@@ -626,7 +626,8 @@ def create_demo_interface(demo: VoxCPMDemo):
                         interactive=True,
                         scale=2,
                     )
-                    batch_output = gr.File(label="📦 ZIP 下载", visible=False, scale=1)
+                    batch_output = gr.DownloadButton(label="下载全部 ZIP", visible=False, size="sm", scale=1)
+                batch_audio_map = gr.State({})
 
                 # 保存音色
                 with gr.Accordion("保存音色", open=False):
@@ -788,6 +789,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value="", visible=False),
+                    {},
                 )
 
             choices = []
@@ -802,6 +804,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 gr.update(choices=choices, value=first_value, label=f"选择预览 TXT（共 {len(txt_files)} 个）"),
                 gr.update(choices=[], value=None, visible=False),
                 gr.update(value="", visible=False),
+                {},
             )
 
         def _show_txt_preview(fpath):
@@ -831,6 +834,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(visible=False),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value="生成中...", interactive=False),
+                    {},
                 )
             return (
                 gr.update(value=None),
@@ -839,6 +843,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 gr.update(visible=False),
                 gr.update(choices=[], value=None, visible=False),
                 gr.update(value="生成中...", interactive=False),
+                {},
             )
 
         def _batch_generate(
@@ -859,6 +864,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(value="请先上传 TXT 文件。", visible=True),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value=None),
+                    {},
                 )
             import tempfile, zipfile
             out_dir = Path(tempfile.mkdtemp(prefix="voxcpm_batch_"))
@@ -916,6 +922,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(value=status, visible=True),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value=None),
+                    {},
                 )
 
             zip_path = out_dir.parent / f"{out_dir.name}.zip"
@@ -929,13 +936,16 @@ def create_demo_interface(demo: VoxCPMDemo):
             if hidden_success_count:
                 summary_lines.append(f"... 另外 {hidden_success_count} 条成功结果已收起，可在试听下拉框中选择。")
             status_lines = summary_lines + status_lines
-            choices = [(wav_file.name, str(wav_file)) for wav_file in generated_files]
-            first_audio = str(generated_files[0]) if generated_files else None
+            audio_map = {wav_file.name: str(wav_file) for wav_file in generated_files}
+            choices = list(audio_map.keys())
+            first_choice = choices[0] if choices else None
+            first_audio = audio_map.get(first_choice) if first_choice else None
             return (
                 gr.update(value=str(zip_path), visible=True),
                 gr.update(value="\n".join(status_lines), visible=True),
-                gr.update(choices=choices, value=first_audio, visible=True),
+                gr.update(choices=choices, value=first_choice, visible=True),
                 gr.update(value=first_audio),
+                audio_map,
             )
 
         def _generate_or_batch(
@@ -953,7 +963,7 @@ def create_demo_interface(demo: VoxCPMDemo):
         ):
             try:
                 if txt_files:
-                    batch_file, status, preview_choices, first_audio = _batch_generate(
+                    batch_file, status, preview_choices, first_audio, audio_map = _batch_generate(
                         txt_files,
                         control_instruction_val,
                         ref_wav,
@@ -972,6 +982,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                         status,
                         preview_choices,
                         gr.update(value="开始生成", interactive=True),
+                        audio_map,
                     )
 
                 audio, last_successful_seed = _generate(
@@ -993,6 +1004,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(value="完成：单条音频已生成。", visible=True),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value="开始生成", interactive=True),
+                    {},
                 )
             except Exception as exc:
                 logger.exception("Generation failed.")
@@ -1003,6 +1015,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(value=f"生成失败：{exc}", visible=True),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value="开始生成", interactive=True),
+                    {},
                 )
 
         txt_upload.change(
@@ -1015,6 +1028,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 txt_preview_dropdown,
                 batch_preview_dropdown,
                 generation_status,
+                batch_audio_map,
             ],
             show_progress=False,
         )
@@ -1035,7 +1049,7 @@ def create_demo_interface(demo: VoxCPMDemo):
         run_btn.click(
             fn=_prepare_generation_feedback,
             inputs=[random_seed, seed_value, txt_upload],
-            outputs=[audio_output, seed_value, generation_status, batch_output, batch_preview_dropdown, run_btn],
+            outputs=[audio_output, seed_value, generation_status, batch_output, batch_preview_dropdown, run_btn, batch_audio_map],
             show_progress=False,
         ).then(
             fn=_generate_or_batch,
@@ -1047,14 +1061,14 @@ def create_demo_interface(demo: VoxCPMDemo):
                 cfg_value, DoNormalizeText, DoDenoisePromptAudio,
                 dit_steps, seed_value, txt_upload,
             ],
-            outputs=[audio_output, seed_value, batch_output, generation_status, batch_preview_dropdown, run_btn],
+            outputs=[audio_output, seed_value, batch_output, generation_status, batch_preview_dropdown, run_btn, batch_audio_map],
             show_progress=True,
             api_name="generate",
         )
 
         batch_preview_dropdown.change(
-            fn=lambda audio_path: gr.update(value=audio_path),
-            inputs=[batch_preview_dropdown],
+            fn=lambda choice, audio_map: gr.update(value=(audio_map or {}).get(choice)),
+            inputs=[batch_preview_dropdown, batch_audio_map],
             outputs=[audio_output],
         )
 
