@@ -612,7 +612,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     value="",
                     visible=False,
                     interactive=False,
-                    lines=2,
+                    lines=5,
                 )
 
                 # 批量生成结果
@@ -775,6 +775,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(choices=[], value=None, visible=False),
                     gr.update(value=None, visible=False),
+                    gr.update(value="", visible=False),
                 )
 
             choices = []
@@ -789,6 +790,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                 gr.update(choices=choices, value=first_value, label=f"选择预览 TXT（共 {len(txt_files)} 个）"),
                 gr.update(choices=[], value=None, visible=False),
                 gr.update(value=None, visible=False),
+                gr.update(value="", visible=False),
             )
 
         def _show_txt_preview(fpath):
@@ -851,6 +853,8 @@ def create_demo_interface(demo: VoxCPMDemo):
             out_dir = Path(tempfile.mkdtemp(prefix="voxcpm_batch_"))
             status_lines = []
             generated_files = []
+            success_preview = []
+            hidden_success_count = 0
             generated_count = 0
             for index, f in enumerate(txt_files, 1):
                 fpath = f.name if hasattr(f, 'name') else f
@@ -864,8 +868,6 @@ def create_demo_interface(demo: VoxCPMDemo):
                 if not content:
                     status_lines.append(f"跳过空文件：{Path(fpath).name}")
                     continue
-                preview = re.sub(r"\s+", " ", content[:80])
-                status_lines.append(f"已读取：{Path(fpath).name}，{char_count} 字，编码 {encoding}，预览：{preview}")
                 seed = _prepare_seed(True, seed_val)
                 actual_prompt = prompt_text_val.strip() if use_prompt_text else ""
                 actual_ctrl = "" if use_prompt_text else control_instruction_val
@@ -888,6 +890,10 @@ def create_demo_interface(demo: VoxCPMDemo):
                     sf.write(str(out_path), wav_np, sr)
                     generated_files.append(out_path)
                     generated_count += 1
+                    if len(success_preview) < 5:
+                        success_preview.append(f"{out_name}（{Path(fpath).name}，{char_count} 字，{encoding}）")
+                    else:
+                        hidden_success_count += 1
                 except Exception as e:
                     logger.error(f"Batch gen failed for {fpath}: {e}")
                     status_lines.append(f"生成失败：{Path(fpath).name}（{e}）")
@@ -905,7 +911,13 @@ def create_demo_interface(demo: VoxCPMDemo):
             with zipfile.ZipFile(zip_path, "w") as zf:
                 for wav_file in sorted(out_dir.glob("*.wav")):
                     zf.write(wav_file, wav_file.name)
-            status_lines.append(f"完成：生成 {generated_count} 条音频。")
+            summary_lines = [f"完成：生成 {generated_count} 条音频。"]
+            if success_preview:
+                summary_lines.append("可试听：")
+                summary_lines.extend(success_preview)
+            if hidden_success_count:
+                summary_lines.append(f"... 另外 {hidden_success_count} 条成功结果已收起，可在试听下拉框中选择。")
+            status_lines = summary_lines + status_lines
             choices = [(wav_file.name, str(wav_file)) for wav_file in generated_files]
             first_audio = str(generated_files[0]) if generated_files else None
             return (
@@ -988,7 +1000,15 @@ def create_demo_interface(demo: VoxCPMDemo):
         txt_upload.change(
             fn=_preview_txt_files,
             inputs=[txt_upload],
-            outputs=[txt_status, batch_output, txt_preview_group, txt_preview_dropdown, batch_preview_dropdown, batch_preview_audio],
+            outputs=[
+                txt_status,
+                batch_output,
+                txt_preview_group,
+                txt_preview_dropdown,
+                batch_preview_dropdown,
+                batch_preview_audio,
+                generation_status,
+            ],
             show_progress=False,
         )
 
