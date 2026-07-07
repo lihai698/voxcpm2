@@ -5,3 +5,10 @@ voxcpm.egg-info
 .DS_Store
 /pretrained_models/
 app_local.py
+outputs/
+outs/
+logs/
+runs/
+checkpoints/
+*.log
+*.tmp

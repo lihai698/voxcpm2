@@ -224,6 +224,46 @@ _APP_THEME = gr.themes.Soft(
 # ---------- Model ----------
 
 
+REQUIRED_LOCAL_MODEL_FILES = (
+    "config.json",
+    "tokenizer.json",
+    "model.safetensors",
+    "audiovae.pth",
+)
+
+
+def validate_local_model_dir(model_id: str) -> None:
+    model_path = Path(model_id)
+    looks_like_local_path = model_path.is_absolute() or os.sep in model_id or (os.altsep and os.altsep in model_id)
+    if not model_path.exists():
+        if looks_like_local_path:
+            raise FileNotFoundError(f"Local model directory does not exist: {model_path}")
+        return
+    if not model_path.is_dir():
+        raise FileNotFoundError(f"Local model path is not a directory: {model_path}")
+
+    if not looks_like_local_path:
+        return
+
+    missing = [name for name in REQUIRED_LOCAL_MODEL_FILES if not (model_path / name).is_file()]
+    if missing:
+        missing_list = "\n".join(f"- {model_path / name}" for name in missing)
+        raise FileNotFoundError(f"Local model is incomplete. Missing files:\n{missing_list}")
+
+
+def friendly_runtime_error(exc: Exception) -> RuntimeError:
+    message = str(exc)
+    lower_message = message.lower()
+    if "out of memory" in lower_message or "cuda error" in lower_message:
+        return RuntimeError(
+            "CUDA memory is not enough for this request. Close other GPU-heavy apps and try again. "
+            f"Original error: {message}"
+        )
+    if isinstance(exc, FileNotFoundError):
+        return RuntimeError(f"Required file is missing. {message}")
+    return RuntimeError(f"VoxCPM2 failed to run. Original error: {message}")
+
+
 class VoxCPMDemo:
     def __init__(self, model_id: str = "openbmb/VoxCPM2", device: str = "auto") -> None:
         self.device = resolve_runtime_device(device, "cuda")
@@ -241,11 +281,16 @@ class VoxCPMDemo:
         if self.voxcpm_model is not None:
             return self.voxcpm_model
         logger.info(f"Loading model: {self._model_id}")
-        self.voxcpm_model = voxcpm.VoxCPM.from_pretrained(
-            self._model_id,
-            optimize=self.optimize,
-            device=self.device,
-        )
+        try:
+            validate_local_model_dir(self._model_id)
+            self.voxcpm_model = voxcpm.VoxCPM.from_pretrained(
+                self._model_id,
+                optimize=self.optimize,
+                device=self.device,
+            )
+        except Exception as exc:
+            logger.exception("Failed to load VoxCPM model.")
+            raise friendly_runtime_error(exc) from exc
         logger.info("Model loaded successfully.")
         return self.voxcpm_model
 
@@ -343,7 +388,11 @@ class VoxCPMDemo:
             inference_timesteps=inference_timesteps,
             seed=seed,
         )
-        wav = current_model.generate(**generate_kwargs)
+        try:
+            wav = current_model.generate(**generate_kwargs)
+        except Exception as exc:
+            logger.exception("VoxCPM generation failed.")
+            raise friendly_runtime_error(exc) from exc
         last_successful_seed = getattr(current_model.tts_model, "last_successful_seed", seed)
         return (current_model.tts_model.sample_rate, wav, last_successful_seed)
 

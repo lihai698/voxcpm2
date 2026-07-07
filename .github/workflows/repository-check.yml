@@ -1,0 +1,13 @@
+name: Repository Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain repository policy
+        run: |
+          echo "This personal repository does not publish packages to PyPI."
+          echo "Model weights are intentionally excluded from Git."
