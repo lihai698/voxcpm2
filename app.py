@@ -370,6 +370,11 @@ _CUSTOM_CSS = """
     max-height: 220px !important;
     overflow-y: auto !important;
 }
+#generation-status-box textarea {
+    max-height: 92px !important;
+    overflow-y: auto !important;
+    resize: vertical;
+}
 """
 
 _APP_THEME = gr.themes.Soft(
@@ -944,7 +949,8 @@ def create_demo_interface(demo: VoxCPMDemo):
                     value="",
                     visible=False,
                     interactive=False,
-                    lines=5,
+                    lines=3,
+                    elem_id="generation-status-box",
                 )
 
                 # 保存音色
@@ -1290,7 +1296,7 @@ def create_demo_interface(demo: VoxCPMDemo):
                     sf.write(str(out_path), wav_np, sr)
                     generated_files.append(out_path)
                     generated_count += 1
-                    if len(success_preview) < 5:
+                    if len(success_preview) < 3:
                         success_preview.append(f"{out_name}（{Path(fpath).name}，{char_count} 字，{encoding}）")
                     else:
                         hidden_success_count += 1
