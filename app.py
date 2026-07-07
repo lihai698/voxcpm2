@@ -361,6 +361,28 @@ _CUSTOM_CSS = """
     font-size: 12px !important;
     padding: 6px 8px !important;
 }
+.txt-upload-title {
+    margin: 8px 0 2px 0 !important;
+    padding: 0 !important;
+    min-height: auto !important;
+}
+.txt-upload-title .prose {
+    margin: 0 !important;
+    padding: 0 !important;
+}
+.txt-upload-title p {
+    margin: 0 !important;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: var(--block-label-background-fill);
+    color: var(--block-label-text-color);
+    font-size: var(--label-text-size);
+    font-family: var(--font);
+    font-weight: 600;
+    border: 1px solid var(--block-border-color);
+    display: inline-block;
+    width: fit-content;
+}
 .compact-result-row {
     align-items: end;
     margin: 4px 0 8px 0;
@@ -902,8 +924,10 @@ def create_demo_interface(demo: VoxCPMDemo):
                 )
 
                 # TXT 批量上传
+                gr.Markdown("上传 TXT 批量生成（多选，每个文件生成一条音频）", elem_classes=["txt-upload-title"])
                 txt_upload = gr.File(
-                    label="上传 TXT 批量生成",
+                    label=None,
+                    show_label=False,
                     file_types=[".txt"],
                     file_count="multiple",
                     height=136,
